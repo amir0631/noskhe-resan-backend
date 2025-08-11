@@ -72,35 +72,38 @@ app.get('/api/v1/pharmacies', async (req, res) => {
     }
 });
 
-app.post('/api/v1/pharmacies', async (req, res) => {
-    const { name, address, latitude, longitude, username, password } = req.body;
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-        const hashedPassword = await bcrypt.hash(password, 10);
-        const pharmacyResult = await client.query(
-            'INSERT INTO pharmacies (name, address, latitude, longitude) VALUES ($1, $2, $3, $4) RETURNING id',
-            [name, address, latitude || 0, longitude || 0]
-        );
-        const newPharmacyId = pharmacyResult.rows[0].id;
-        await client.query(
-            "INSERT INTO users (username, password_hash, pharmacy_id, role) VALUES ($1, $2, $3, 'pharmacy_admin')",
-            [username, hashedPassword, newPharmacyId]
-        );
-        await client.query('COMMIT');
-        res.status(201).json({ message: 'داروخانه با موفقیت ایجاد شد.' });
-    } catch (error) {
-        await client.query('ROLLBACK');
-        console.error('Error in POST /pharmacies:', error);
-        if (error.code === '23505') {
-            res.status(409).json({ message: 'نام کاربری یا نام داروخانه تکراری است.' });
-        } else {
-            res.status(500).json({ message: 'خطای داخلی سرور.' });
-        }
-    } finally {
-        client.release();
-    }
-});
+aapp.post('/api/v1/pharmacies', async (req, res) => {
+     const { name, address, latitude, longitude, username, password } = req.body;
+     const client = await pool.connect();
+     try {
+         await client.query('BEGIN');
+         const hashedPassword = await bcrypt.hash(password, 10);
+         const pharmacyResult = await client.query(
+             'INSERT INTO pharmacies (name, address, latitude, longitude) VALUES ($1, $2, $3, $4) RETURNING id',
+             [name, address, latitude || 0, longitude || 0]
+         );
+         const newPharmacyId = pharmacyResult.rows[0].id;
+         
+         // --- تغییر اصلی اینجاست: پارامتر چهارم ('pharmacy_admin') به لیست مقادیر اضافه شد ---
+         await client.query(
+             "INSERT INTO users (username, password_hash, pharmacy_id, role) VALUES ($1, $2, $3, $4)",
+             [username, hashedPassword, newPharmacyId, 'pharmacy_admin']
+         );
+
+         await client.query('COMMIT');
+         res.status(201).json({ message: 'داروخانه با موفقیت ایجاد شد.' });
+     } catch (error) {
+         await client.query('ROLLBACK');
+         console.error('Error in POST /pharmacies:', error);
+         if (error.code === '23505') {
+             res.status(409).json({ message: 'نام کاربری یا نام داروخانه تکراری است.' });
+         } else {
+             res.status(500).json({ message: 'خطای داخلی سرور.' });
+         }
+     } finally {
+         client.release();
+     }
+ });
 
 // --- API های پنل داروخانه ---
 app.get('/api/v1/pharmacy/prescriptions', authenticateToken, async (req, res) => {

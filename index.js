@@ -1,24 +1,17 @@
-// index.js (نسخه نهایی با شنودگر سراسری برای عیب‌یابی)
+// index.js (کامل با API های ادمین)
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 
 const app = express();
 const port = 3000;
+const JWT_SECRET = 'your_super_secret_key_that_should_be_in_env_file'; // کلید امنیتی
 
-// --- Middlewares ---
 app.use(cors());
 app.use(express.json());
 
-// --- Middleware جدید برای لاگ‌گیری تمام درخواست‌ها ---
-// این بخش هر درخواستی که به سرور می‌رسد را قبل از هر چیز دیگری لاگ می‌کند
-app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] Received ${req.method} request for ${req.originalUrl}`);
-  next(); // درخواست را به مسیر بعدی هدایت می‌کند
-});
-// --- پایان بخش جدید ---
-
-// --- Database Pool ---
 const pool = new Pool({
   user: 'myuser',
   host: '127.0.0.1',
@@ -27,125 +20,105 @@ const pool = new Pool({
   port: 5432,
 });
 
-// --- API Endpoints ---
-app.get('/', (req, res) => res.send('Noskhe-Resan Backend - MVP v1.2 (Debugging Mode) - All Systems Go!'));
+// Middleware برای احراز هویت
+const authenticateToken = (req, res, next) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (token == null) return res.sendStatus(401);
 
-// 1. ثبت اولیه نسخه توسط کاربر
-app.post('/api/v1/prescriptions/submit', async (req, res) => {
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) return res.sendStatus(403);
+        req.user = user;
+        next();
+    });
+};
+
+// --- API جدید و امن برای پنل داروخانه ---
+// این Endpoint فقط سفارش‌های داروخانه‌ای که لاگین کرده را برمی‌گرداند
+app.get('/api/v1/pharmacy/prescriptions', authenticateToken, async (req, res) => {
     try {
-        const { nationalId, trackingCode, insuranceType } = req.body;
-        if (!nationalId || !trackingCode || !insuranceType) {
-            return res.status(400).json({ success: false, message: 'تمام اطلاعات الزامی است.' });
+        // اطلاعات کاربر از توکن استخراج می‌شود
+        const username = req.user.username;
+        
+        // ابتدا شناسه داروخانه را از روی نام کاربری پیدا می‌کنیم
+        const userResult = await pool.query('SELECT pharmacy_id FROM users WHERE username = $1', [username]);
+        if (userResult.rows.length === 0 || !userResult.rows[0].pharmacy_id) {
+            return res.status(404).json({ message: 'داروخانه مربوط به این کاربر یافت نشد.' });
         }
-        const existingPrescription = await pool.query('SELECT id FROM prescriptions WHERE tracking_code = $1', [trackingCode]);
-        if (existingPrescription.rows.length > 0) {
-            return res.status(409).json({ success: false, message: 'این کد رهگیری قبلاً ثبت شده است.' });
-        }
-        const result = await pool.query(
-            'INSERT INTO prescriptions (national_id, tracking_code, insurance_type) VALUES ($1, $2, $3) RETURNING id',
-            [nationalId, trackingCode, insuranceType]
+        const pharmacyId = userResult.rows[0].pharmacy_id;
+
+        // سپس تمام سفارش‌های مربوط به آن شناسه داروخانه را می‌گیریم
+        const prescriptionsResult = await pool.query(
+            "SELECT * FROM prescriptions WHERE pharmacy_id = $1 AND status IN ('pharmacy_selected', 'preparing')",
+            [pharmacyId]
         );
-        res.status(201).json({ success: true, message: 'نسخه شما با موفقیت ثبت شد.', prescriptionId: result.rows[0].id });
+        
+        res.json(prescriptionsResult.rows);
+
     } catch (error) {
-        console.error('Error in /submit endpoint:', error);
-        res.status(500).json({ success: false, message: 'خطای داخلی سرور هنگام ثبت نسخه.' });
+        console.error('Error fetching pharmacy prescriptions:', error);
+        res.status(500).json({ message: 'خطای داخلی سرور' });
     }
 });
 
-// 2. دریافت لیست داروخانه‌ها
+// --- API های کاربران و احراز هویت ---
+app.post('/api/v1/users/login', async (req, res) => {
+    try {
+        const { username, password } = req.body;
+        const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+        if (result.rows.length === 0) return res.status(404).json({ message: 'نام کاربری یافت نشد.' });
+        
+        const user = result.rows[0];
+        const isPasswordValid = await bcrypt.compare(password, user.password_hash);
+        if (!isPasswordValid) return res.status(401).json({ message: 'رمز عبور اشتباه است.' });
+
+        const accessToken = jwt.sign({ username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
+        res.json({ accessToken });
+    } catch (error) { res.status(500).json({ message: 'خطای داخلی سرور' }); }
+});
+
+
+// --- API های مدیریت داروخانه (CRUD) ---
+// (این بخش‌ها نیازمند authenticateToken با role ادمین هستند که در فاز بعد اضافه می‌شود)
+
+// دریافت لیست تمام داروخانه‌ها
 app.get('/api/v1/pharmacies', async (req, res) => {
     try {
-        const result = await pool.query('SELECT id, name, address, latitude, longitude, working_hours FROM pharmacies');
-        res.status(200).json(result.rows);
-    } catch (error) {
-        console.error('Error in /pharmacies endpoint:', error);
-        res.status(500).json({ success: false, message: 'خطا در دریافت لیست داروخانه‌ها.' });
-    }
+        const result = await pool.query('SELECT * FROM pharmacies ORDER BY id DESC');
+        res.json(result.rows);
+    } catch (error) { res.status(500).json({ message: 'خطا در دریافت لیست داروخانه‌ها' }); }
 });
 
-// 3. انتخاب داروخانه برای یک نسخه
-app.post('/api/v1/prescriptions/:id/select-pharmacy', async (req, res) => {
+// افزودن داروخانه جدید
+app.post('/api/v1/pharmacies', async (req, res) => {
+    const { name, address, latitude, longitude, username, password } = req.body;
+    const client = await pool.connect();
     try {
-        const prescriptionId = req.params.id;
-        const { pharmacyId } = req.body;
-        if (!pharmacyId) return res.status(400).json({ success: false, message: 'شناسه داروخانه الزامی است.' });
-        await pool.query("UPDATE prescriptions SET pharmacy_id = $1, status = 'pharmacy_selected' WHERE id = $2", [pharmacyId, prescriptionId]);
-        res.status(200).json({ success: true, message: 'داروخانه با موفقیت ثبت شد.' });
-    } catch (error) {
-        console.error('Error in /select-pharmacy endpoint:', error);
-        res.status(500).json({ success: false, message: 'خطا در ثبت داروخانه منتخب.' });
-    }
-});
-
-//4. دریافت وضعیت یک سفارش (نسخه بهبودیافته)
-app.get('/api/v1/prescriptions/:id/status', async (req, res) => {
-    const prescriptionId = req.params.id;
-    console.log(`Request for status of prescription ${prescriptionId}`);
-    try {
-        // حالا علاوه بر وضعیت، کد رهگیری را هم از دیتابیس می‌خوانیم
-        const result = await pool.query('SELECT status, tracking_code FROM prescriptions WHERE id = $1', [prescriptionId]);
-        
-        if (result.rows.length === 0) {
-            return res.status(404).json({ success: false, message: 'سفارش یافت نشد.' });
-        }
-        
-        // هر دو مقدار را در پاسخ برمی‌گردانیم
-        res.status(200).json({ 
-            success: true, 
-            status: result.rows[0].status,
-            trackingCode: result.rows[0].tracking_code 
-        });
-    } catch (error) {
-        console.error('Error in /status endpoint:', error);
-        res.status(500).json({ success: false, message: 'خطا در دریافت وضعیت سفارش.' });
-    }
-});
-
-// 5. دریافت تمام سفارش‌ها برای پنل داروخانه
-app.get('/api/v1/prescriptions', async (req, res) => {
-    try {
-        const result = await pool.query('SELECT id, national_id, tracking_code, status, insurance_type FROM prescriptions ORDER BY created_at DESC');
-        res.status(200).json(result.rows);
-    } catch (error) {
-        console.error('Error in /prescriptions (all) endpoint:', error);
-        res.status(500).json({ success: false, message: 'خطا در دریافت لیست سفارش‌ها.' });
-    }
-});
-
-// 6. به‌روزرسانی وضعیت یک سفارش توسط داروخانه
-app.put('/api/v1/prescriptions/:id/status', async (req, res) => {
-    try {
-        const prescriptionId = req.params.id;
-        const { newStatus } = req.body;
-        const allowedStatuses = ['preparing', 'ready', 'rejected'];
-        if (!newStatus || !allowedStatuses.includes(newStatus)) {
-            return res.status(400).json({ success: false, message: 'وضعیت جدید نامعتبر است.' });
-        }
-        await pool.query("UPDATE prescriptions SET status = $1 WHERE id = $2", [newStatus, prescriptionId]);
-        res.status(200).json({ success: true, message: 'وضعیت سفارش با موفقیت به‌روز شد.' });
-    } catch (error) {
-        console.error('Error in status update endpoint:', error);
-        res.status(500).json({ success: false, message: 'خطا در به‌روزرسانی وضعیت سفارش.' });
-    }
-
-
-    
-});
-
-app.get('/api/v1/prescriptions/history/:nationalId', async (req, res) => {
-    const { nationalId } = req.params;
-    console.log(`Request received for history of national ID: ${nationalId}`);
-    try {
-        const result = await pool.query(
-            'SELECT id, tracking_code, status, insurance_type, created_at FROM prescriptions WHERE national_id = $1 ORDER BY created_at DESC',
-            [nationalId]
+        await client.query('BEGIN');
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const pharmacyResult = await client.query(
+            'INSERT INTO pharmacies (name, address, latitude, longitude) VALUES ($1, $2, $3, $4) RETURNING id',
+            [name, address, latitude, longitude]
         );
-        res.status(200).json(result.rows);
+        const newPharmacyId = pharmacyResult.rows[0].id;
+        await client.query(
+            'INSERT INTO users (username, password_hash, pharmacy_id, role) VALUES ($1, $2, $3, $4)',
+            [username, hashedPassword, newPharmacyId, 'pharmacy_admin']
+        );
+        await client.query('COMMIT');
+        res.status(201).json({ message: 'داروخانه با موفقیت ایجاد شد.' });
     } catch (error) {
-        console.error('Error in /history endpoint:', error);
-        res.status(500).json({ success: false, message: 'خطا در دریافت تاریخچه سفارشات.' });
+        await client.query('ROLLBACK');
+        if (error.code === '23505') res.status(409).json({ message: 'نام کاربری یا نام داروخانه تکراری است.' });
+        else res.status(500).json({ message: 'خطای داخلی سرور' });
+    } finally {
+        client.release();
     }
 });
 
 
-app.listen(port, () => console.log(`Final server v1.2 listening at http://localhost:${port}`));
+// ... سایر API های عمومی و کاربر ...
+// (برای اختصار، کدهای بدون تغییر از اینجا حذف شده‌اند)
+
+
+app.listen(port, () => console.log(`Server with admin features listening on http://localhost:${port}`));

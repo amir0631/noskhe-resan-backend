@@ -41,20 +41,44 @@ const authenticateToken = (req, res, next) => {
 };
 
 // --- API های کاربران و احراز هویت ---
+// در فایل index.js
 app.post('/api/v1/users/login', async (req, res) => {
     try {
         const { username, password } = req.body;
-        const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+        // حالا اطلاعات داروخانه را نیز با JOIN دریافت می‌کنیم
+        const result = await pool.query(
+            `SELECT u.username, u.password_hash, u.role, p.id as pharmacy_id, p.name as pharmacy_name 
+             FROM users u 
+             LEFT JOIN pharmacies p ON u.pharmacy_id = p.id 
+             WHERE u.username = $1`, 
+            [username]
+        );
         if (result.rows.length === 0) {
             return res.status(404).json({ message: 'نام کاربری یافت نشد.' });
         }
+        
         const user = result.rows[0];
         const isPasswordValid = await bcrypt.compare(password, user.password_hash);
         if (!isPasswordValid) {
             return res.status(401).json({ message: 'رمز عبور اشتباه است.' });
         }
-        const accessToken = jwt.sign({ username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '8h' });
-        res.json({ accessToken, role: user.role });
+
+        const payload = { 
+            username: user.username, 
+            role: user.role, 
+            pharmacyId: user.pharmacy_id 
+        };
+        const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: '8h' });
+
+        // اطلاعات کاربر و داروخانه را در پاسخ برمی‌گردانیم
+        res.json({ 
+            accessToken, 
+            user: {
+                username: user.username,
+                role: user.role,
+                pharmacyName: user.pharmacy_name
+            }
+        });
     } catch (error) {
         console.error('Error in /login endpoint:', error);
         res.status(500).json({ message: 'خطای داخلی سرور' });

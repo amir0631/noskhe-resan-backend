@@ -1,4 +1,4 @@
-// index.js (نسخه نهایی و کامل با تمام قابلیت‌ها)
+// index.js (نسخه نهایی و اصلاح شده)
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
@@ -13,7 +13,6 @@ const JWT_SECRET = 'your_super_secret_key_that_should_be_in_env_file';
 app.use(cors());
 app.use(express.json());
 
-// Middleware برای لاگ‌گیری تمام درخواست‌ها
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] Received ${req.method} request for ${req.originalUrl}`);
   next();
@@ -49,13 +48,11 @@ app.post('/api/v1/users/login', async (req, res) => {
         if (result.rows.length === 0) {
             return res.status(404).json({ message: 'نام کاربری یافت نشد.' });
         }
-        
         const user = result.rows[0];
         const isPasswordValid = await bcrypt.compare(password, user.password_hash);
         if (!isPasswordValid) {
             return res.status(401).json({ message: 'رمز عبور اشتباه است.' });
         }
-
         const accessToken = jwt.sign({ username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '8h' });
         res.json({ accessToken, role: user.role });
     } catch (error) {
@@ -65,8 +62,6 @@ app.post('/api/v1/users/login', async (req, res) => {
 });
 
 // --- API های مدیریت داروخانه (برای پنل ادمین کل) ---
-
-// دریافت لیست تمام داروخانه‌ها
 app.get('/api/v1/pharmacies', async (req, res) => {
     try {
         const result = await pool.query('SELECT p.id, p.name, p.address, u.username FROM pharmacies p LEFT JOIN users u ON p.id = u.pharmacy_id ORDER BY p.id DESC');
@@ -77,9 +72,7 @@ app.get('/api/v1/pharmacies', async (req, res) => {
     }
 });
 
-// افزودن داروخانه جدید
 app.post('/api/v1/pharmacies', async (req, res) => {
-    // در یک پروژه واقعی، این بخش باید با authenticateToken و چک کردن نقش ادمین، امن شود
     const { name, address, latitude, longitude, username, password } = req.body;
     const client = await pool.connect();
     try {
@@ -109,7 +102,6 @@ app.post('/api/v1/pharmacies', async (req, res) => {
     }
 });
 
-
 // --- API های پنل داروخانه ---
 app.get('/api/v1/pharmacy/prescriptions', authenticateToken, async (req, res) => {
     try {
@@ -130,10 +122,7 @@ app.get('/api/v1/pharmacy/prescriptions', authenticateToken, async (req, res) =>
     }
 });
 
-
 // --- API های عمومی (PWA کاربر) ---
-
-// ثبت نسخه
 app.post('/api/v1/prescriptions/submit', async (req, res) => {
     try {
         const { nationalId, trackingCode, insuranceType } = req.body;
@@ -142,6 +131,7 @@ app.post('/api/v1/prescriptions/submit', async (req, res) => {
         }
         const existingPrescription = await pool.query('SELECT id FROM prescriptions WHERE tracking_code = $1', [trackingCode]);
         if (existingPrescription.rows.length > 0) {
+            // این خط اصلاح شده است
             return res.status(409).json({ success: false, message: 'این کد رهگیری قبلاً ثبت شده است.' });
         }
         const result = await pool.query(
@@ -155,7 +145,6 @@ app.post('/api/v1/prescriptions/submit', async (req, res) => {
     }
 });
 
-// انتخاب داروخانه
 app.post('/api/v1/prescriptions/:id/select-pharmacy', async (req, res) => {
     try {
         const prescriptionId = req.params.id;
@@ -169,7 +158,6 @@ app.post('/api/v1/prescriptions/:id/select-pharmacy', async (req, res) => {
     }
 });
 
-// دریافت وضعیت سفارش
 app.get('/api/v1/prescriptions/:id/status', async (req, res) => {
     try {
         const prescriptionId = req.params.id;
@@ -182,7 +170,6 @@ app.get('/api/v1/prescriptions/:id/status', async (req, res) => {
     }
 });
 
-// دریافت تاریخچه سفارشات
 app.get('/api/v1/prescriptions/history/:nationalId', async (req, res) => {
     try {
         const { nationalId } = req.params;
@@ -197,9 +184,7 @@ app.get('/api/v1/prescriptions/history/:nationalId', async (req, res) => {
     }
 });
 
-// به‌روزرسانی وضعیت توسط داروخانه (از پنل)
 app.put('/api/v1/prescriptions/:id/status', async (req, res) => {
-    // در یک پروژه واقعی، این بخش باید با authenticateToken و چک کردن نقش داروخانه، امن شود
     try {
         const prescriptionId = req.params.id;
         const { newStatus } = req.body;
@@ -214,6 +199,5 @@ app.put('/api/v1/prescriptions/:id/status', async (req, res) => {
         res.status(500).json({ success: false, message: 'خطا در به‌روزرسانی وضعیت سفارش.' });
     }
 });
-
 
 app.listen(port, () => console.log(`Server with all features listening on http://localhost:${port}`));

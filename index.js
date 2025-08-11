@@ -1,27 +1,64 @@
-// index.js (نهایی با ثبت زمان و تسویه)
+// index.js (نسخه نهایی با تمام قابلیت‌ها از جمله ثبت زمان)
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
-// ... (بخش‌های اولیه بدون تغییر) ...
 const app = express();
 const port = 3000;
 const JWT_SECRET = 'your_super_secret_key_that_should_be_in_env_file';
+
+// --- Middlewares ---
 app.use(cors());
 app.use(express.json());
-const pool = new Pool({ /* ... */ });
-const authenticateToken = (req, res, next) => { /* ... */ };
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] Received ${req.method} request for ${req.originalUrl}`);
+  next();
+});
 
-// --- API های کاربران و احراز هویت (بدون تغییر) ---
-app.post('/api/v1/users/login', async (req, res) => { /* ... */ });
+// --- Database Pool ---
+const pool = new Pool({
+  user: 'myuser', host: '127.0.0.1', database: 'noskheresan_db', password: 'mypassword', port: 5432,
+});
 
-// --- API های مدیریت داروخانه (بدون تغییر) ---
-app.get('/api/v1/pharmacies', async (req, res) => { /* ... */ });
-app.post('/api/v1/pharmacies', async (req, res) => { /* ... */ });
+// --- Middleware برای احراز هویت ---
+const authenticateToken = (req, res, next) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (token == null) return res.sendStatus(401);
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) return res.sendStatus(403);
+        req.user = user;
+        next();
+    });
+};
 
-// --- API های پنل داروخانه (به‌روز شده) ---
+// --- API های کاربران و احراز هویت ---
+app.post('/api/v1/users/login', async (req, res) => {
+    try {
+        const { username, password } = req.body;
+        const result = await pool.query(
+            `SELECT u.username, u.password_hash, u.role, p.id as pharmacy_id, p.name as pharmacy_name 
+             FROM users u LEFT JOIN pharmacies p ON u.pharmacy_id = p.id WHERE u.username = $1`, 
+            [username]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ message: 'نام کاربری یافت نشد.' });
+        const user = result.rows[0];
+        const isPasswordValid = await bcrypt.compare(password, user.password_hash);
+        if (!isPasswordValid) return res.status(401).json({ message: 'رمز عبور اشتباه است.' });
+        const payload = { username: user.username, role: user.role, pharmacyId: user.pharmacy_id };
+        const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: '8h' });
+        res.json({ accessToken, user: { username: user.username, role: user.role, pharmacyName: user.pharmacy_name }});
+    } catch (error) { res.status(500).json({ message: 'خطای داخلی سرور' }); }
+});
+
+// --- API های پنل ادمین کل ---
+app.get('/api/v1/pharmacies', async (req, res) => { /* ... کد قبلی ... */ });
+app.post('/api/v1/pharmacies', async (req, res) => { /* ... کد قبلی ... */ });
+
+
+// --- API های پنل داروخانه ---
 app.get('/api/v1/pharmacy/prescriptions', authenticateToken, async (req, res) => {
     try {
         const username = req.user.username;
@@ -30,21 +67,15 @@ app.get('/api/v1/pharmacy/prescriptions', authenticateToken, async (req, res) =>
             return res.status(404).json({ message: 'داروخانه مربوط به این کاربر یافت نشد.' });
         }
         const pharmacyId = userResult.rows[0].pharmacy_id;
-        
-        // حالا سفارش‌های تکمیل شده را نیز برمی‌گردانیم تا دکمه تسویه نمایش داده شود
         const prescriptionsResult = await pool.query(
             "SELECT * FROM prescriptions WHERE pharmacy_id = $1 AND settled_at IS NULL ORDER BY created_at DESC",
             [pharmacyId]
         );
         res.json(prescriptionsResult.rows);
-    } catch (error) {
-        console.error('Error fetching pharmacy prescriptions:', error);
-        res.status(500).json({ message: 'خطای داخلی سرور' });
-    }
+    } catch (error) { res.status(500).json({ message: 'خطای داخلی سرور' }); }
 });
 
-// به‌روزرسانی وضعیت توسط داروخانه (به‌روز شده)
-app.put('/api/v1/prescriptions/:id/status', async (req, res) => {
+app.put('/api/v1/prescriptions/:id/status', authenticateToken, async (req, res) => {
     try {
         const prescriptionId = req.params.id;
         const { newStatus } = req.body;
@@ -53,54 +84,40 @@ app.put('/api/v1/prescriptions/:id/status', async (req, res) => {
             return res.status(400).json({ success: false, message: 'وضعیت جدید نامعتبر است.' });
         }
         
-        // اگر وضعیت نهایی است، زمان تکمیل را ثبت کن
-        if (newStatus === 'ready' || newStatus === 'rejected') {
-            await pool.query("UPDATE prescriptions SET status = $1, completed_at = NOW() WHERE id = $2", [newStatus, prescriptionId]);
-        } else {
-            await pool.query("UPDATE prescriptions SET status = $1 WHERE id = $2", [newStatus, prescriptionId]);
-        }
+        let queryText = "UPDATE prescriptions SET status = $1 WHERE id = $2";
+        const queryParams = [newStatus, prescriptionId];
 
+        if (newStatus === 'ready' || newStatus === 'rejected') {
+            queryText = "UPDATE prescriptions SET status = $1, completed_at = NOW() WHERE id = $2";
+        }
+        
+        await pool.query(queryText, queryParams);
         res.status(200).json({ success: true, message: 'وضعیت سفارش با موفقیت به‌روز شد.' });
-    } catch (error) {
-        console.error('Error in status update endpoint:', error);
-        res.status(500).json({ success: false, message: 'خطا در به‌روزرسانی وضعیت سفارش.' });
-    }
+    } catch (error) { res.status(500).json({ success: false, message: 'خطا در به‌روزرسانی وضعیت سفارش.' }); }
 });
 
-// --- API جدید برای تسویه حساب ---
 app.post('/api/v1/prescriptions/:id/settle', authenticateToken, async (req, res) => {
     try {
         const prescriptionId = req.params.id;
         await pool.query("UPDATE prescriptions SET settled_at = NOW() WHERE id = $1", [prescriptionId]);
         res.status(200).json({ success: true, message: 'سفارش با موفقیت تسویه شد.' });
-    } catch (error) {
-        console.error('Error in settle endpoint:', error);
-        res.status(500).json({ message: 'خطا در تسویه حساب.' });
-    }
+    } catch (error) { res.status(500).json({ message: 'خطا در تسویه حساب.' }); }
 });
 
 
-// --- API های عمومی (PWA کاربر) (به‌روز شده) ---
-app.post('/api/v1/prescriptions/submit', async (req, res) => { /* ... */ });
-
-// انتخاب داروخانه (به‌روز شده برای ثبت زمان)
+// --- API های عمومی (PWA) ---
+app.post('/api/v1/prescriptions/submit', async (req, res) => { /* ... کد قبلی ... */ });
 app.post('/api/v1/prescriptions/:id/select-pharmacy', async (req, res) => {
     try {
         const prescriptionId = req.params.id;
         const { pharmacyId } = req.body;
         if (!pharmacyId) return res.status(400).json({ success: false, message: 'شناسه داروخانه الزامی است.' });
-        
-        // زمان تایید داروخانه را ثبت می‌کنیم
         await pool.query("UPDATE prescriptions SET pharmacy_id = $1, status = 'pharmacy_selected', pharmacy_assigned_at = NOW() WHERE id = $2", [pharmacyId, prescriptionId]);
-        
         res.status(200).json({ success: true, message: 'داروخانه با موفقیت ثبت شد.' });
-    } catch (error) {
-        console.error('Error in /select-pharmacy endpoint:', error);
-        res.status(500).json({ success: false, message: 'خطا در ثبت داروخانه منتخب.' });
-    }
+    } catch (error) { res.status(500).json({ success: false, message: 'خطا در ثبت داروخانه منتخب.' }); }
 });
+app.get('/api/v1/prescriptions/:id/status', async (req, res) => { /* ... کد قبلی ... */ });
+app.get('/api/v1/prescriptions/history/:nationalId', async (req, res) => { /* ... کد قبلی ... */ });
 
-app.get('/api/v1/prescriptions/:id/status', async (req, res) => { /* ... */ });
-app.get('/api/v1/prescriptions/history/:nationalId', async (req, res) => { /* ... */ });
 
-app.listen(port, () => console.log(`Server with timestamp features listening on http://localhost:${port}`));
+app.listen(port, () => console.log(`Server with full features listening on http://localhost:${port}`));

@@ -98,11 +98,11 @@ app.get('/api/v1/pharmacy/prescriptions', authenticateToken, async (req, res) =>
     }
 });
 
-// --- API جدید برای گزارش‌گیری ---
-app.get('/api/v1/pharmacy/reports/settled', authenticateToken, async (req, res) => {
+// --- API جدید برای گزارش‌گیری جامع ---
+app.get('/api/v1/pharmacy/reports/full', authenticateToken, async (req, res) => {
     try {
         const { username } = req.user;
-        const { startDate, endDate } = req.query; // دریافت تاریخ از query params
+        const { startDate, endDate } = req.query;
 
         if (!startDate || !endDate) {
             return res.status(400).json({ message: 'بازه زمانی (startDate, endDate) الزامی است.' });
@@ -114,12 +114,12 @@ app.get('/api/v1/pharmacy/reports/settled', authenticateToken, async (req, res) 
         }
         const pharmacyId = userResult.rows[0].pharmacy_id;
 
+        // تمام جزئیات نسخه‌های تسویه شده در بازه زمانی مشخص شده را انتخاب می‌کنیم
         const reportResult = await pool.query(
-            `SELECT id, tracking_code, national_id, insurance_type, settled_at 
-             FROM prescriptions 
+            `SELECT * FROM prescriptions 
              WHERE pharmacy_id = $1 
              AND settled_at IS NOT NULL 
-             AND settled_at BETWEEN $2 AND $3
+             AND DATE(settled_at) BETWEEN $2 AND $3
              ORDER BY settled_at DESC`,
             [pharmacyId, startDate, endDate]
         );
@@ -127,7 +127,7 @@ app.get('/api/v1/pharmacy/reports/settled', authenticateToken, async (req, res) 
         res.json(reportResult.rows);
 
     } catch (error) {
-        console.error('Error fetching settled reports:', error);
+        console.error('Error fetching full report:', error);
         res.status(500).json({ message: 'خطای داخلی سرور' });
     }
 });
@@ -214,6 +214,7 @@ app.post('/api/v1/prescriptions/:id/settle', authenticateToken, async (req, res)
 });
 
 app.listen(port, () => console.log(`Server listening on http://localhost:${port}`));
+
 
 
 

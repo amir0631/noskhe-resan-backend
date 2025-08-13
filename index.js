@@ -80,11 +80,22 @@ app.get('/api/v1/pharmacy/prescriptions', authenticateToken, async (req, res) =>
     try {
         const username = req.user.username;
         const userResult = await pool.query('SELECT pharmacy_id FROM users WHERE username = $1', [username]);
-        if (userResult.rows.length === 0 || !userResult.rows[0].pharmacy_id) return res.status(404).json({ message: 'داروخانه مربوط به این کاربر یافت نشد.' });
+        if (userResult.rows.length === 0 || !userResult.rows[0].pharmacy_id) {
+            return res.status(404).json({ message: 'داروخانه مربوط به این کاربر یافت نشد.' });
+        }
         const pharmacyId = userResult.rows[0].pharmacy_id;
-        const prescriptionsResult = await pool.query("SELECT * FROM prescriptions WHERE pharmacy_id = $1 AND settled_at IS NULL ORDER BY created_at DESC", [pharmacyId]);
+
+        // --- تغییر اصلی اینجاست: تمام ستون‌ها، از جمله زمان‌ها، انتخاب می‌شوند ---
+        const prescriptionsResult = await pool.query(
+            "SELECT * FROM prescriptions WHERE pharmacy_id = $1 AND settled_at IS NULL ORDER BY created_at DESC",
+            [pharmacyId]
+        );
+        
         res.json(prescriptionsResult.rows);
-    } catch (error) { res.status(500).json({ message: 'خطای داخلی سرور' }); }
+    } catch (error) {
+        console.error('Error fetching pharmacy prescriptions:', error);
+        res.status(500).json({ message: 'خطای داخلی سرور' });
+    }
 });
 
 // --- API های عمومی (PWA کاربر) ---
@@ -148,3 +159,4 @@ app.post('/api/v1/prescriptions/:id/settle', authenticateToken, async (req, res)
 });
 
 app.listen(port, () => console.log(`Server listening on http://localhost:${port}`));
+

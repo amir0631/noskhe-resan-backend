@@ -142,13 +142,34 @@ app.put('/api/v1/prescriptions/:id/status', authenticateToken, async (req, res) 
         const prescriptionId = req.params.id;
         const { newStatus } = req.body;
         const allowedStatuses = ['preparing', 'ready', 'rejected'];
-        if (!newStatus || !allowedStatuses.includes(newStatus)) return res.status(400).json({ success: false, message: 'وضعیت جدید نامعتبر است.' });
-        let queryText = "UPDATE prescriptions SET status = $1 WHERE id = $2";
-        if (newStatus === 'ready' || newStatus === 'rejected') queryText = "UPDATE prescriptions SET status = $1, completed_at = NOW() WHERE id = $2";
-        await pool.query(queryText, [newStatus, prescriptionId]);
+        if (!newStatus || !allowedStatuses.includes(newStatus)) {
+            return res.status(400).json({ success: false, message: 'وضعیت جدید نامعتبر است.' });
+        }
+        
+        let queryText = '';
+        const queryParams = [newStatus, prescriptionId];
+
+        // بر اساس وضعیت جدید، ستون زمان مربوطه را آپدیت می‌کنیم
+        switch (newStatus) {
+            case 'preparing':
+                queryText = "UPDATE prescriptions SET status = $1, processing_started_at = NOW() WHERE id = $2";
+                break;
+            case 'ready':
+            case 'rejected':
+                queryText = "UPDATE prescriptions SET status = $1, completed_at = NOW() WHERE id = $2";
+                break;
+            default:
+                queryText = "UPDATE prescriptions SET status = $1 WHERE id = $2";
+        }
+        
+        await pool.query(queryText, queryParams);
         res.status(200).json({ success: true, message: 'وضعیت سفارش با موفقیت به‌روز شد.' });
-    } catch (error) { res.status(500).json({ success: false, message: 'خطا در به‌روزرسانی وضعیت سفارش.' }); }
+    } catch (error) {
+        console.error('Error in status update endpoint:', error);
+        res.status(500).json({ success: false, message: 'خطا در به‌روزرسانی وضعیت سفارش.' });
+    }
 });
+
 
 app.post('/api/v1/prescriptions/:id/settle', authenticateToken, async (req, res) => {
     try {
@@ -159,4 +180,5 @@ app.post('/api/v1/prescriptions/:id/settle', authenticateToken, async (req, res)
 });
 
 app.listen(port, () => console.log(`Server listening on http://localhost:${port}`));
+
 

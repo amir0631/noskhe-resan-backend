@@ -98,6 +98,40 @@ app.get('/api/v1/pharmacy/prescriptions', authenticateToken, async (req, res) =>
     }
 });
 
+// --- API جدید برای گزارش‌گیری ---
+app.get('/api/v1/pharmacy/reports/settled', authenticateToken, async (req, res) => {
+    try {
+        const { username } = req.user;
+        const { startDate, endDate } = req.query; // دریافت تاریخ از query params
+
+        if (!startDate || !endDate) {
+            return res.status(400).json({ message: 'بازه زمانی (startDate, endDate) الزامی است.' });
+        }
+
+        const userResult = await pool.query('SELECT pharmacy_id FROM users WHERE username = $1', [username]);
+        if (userResult.rows.length === 0 || !userResult.rows[0].pharmacy_id) {
+            return res.status(404).json({ message: 'داروخانه یافت نشد.' });
+        }
+        const pharmacyId = userResult.rows[0].pharmacy_id;
+
+        const reportResult = await pool.query(
+            `SELECT id, tracking_code, national_id, insurance_type, settled_at 
+             FROM prescriptions 
+             WHERE pharmacy_id = $1 
+             AND settled_at IS NOT NULL 
+             AND settled_at BETWEEN $2 AND $3
+             ORDER BY settled_at DESC`,
+            [pharmacyId, startDate, endDate]
+        );
+        
+        res.json(reportResult.rows);
+
+    } catch (error) {
+        console.error('Error fetching settled reports:', error);
+        res.status(500).json({ message: 'خطای داخلی سرور' });
+    }
+});
+
 // --- API های عمومی (PWA کاربر) ---
 app.post('/api/v1/prescriptions/submit', async (req, res) => {
     try {
@@ -180,5 +214,6 @@ app.post('/api/v1/prescriptions/:id/settle', authenticateToken, async (req, res)
 });
 
 app.listen(port, () => console.log(`Server listening on http://localhost:${port}`));
+
 
 

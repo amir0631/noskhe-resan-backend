@@ -142,6 +142,34 @@ app.put('/api/v1/prescriptions/:id/status', authenticateToken, async (req, res) 
     } catch (error) { res.status(500).json({ success: false, message: 'خطا در به‌روزرسانی وضعیت سفارش.' }); }
 });
 
+// --- API جدید برای گزارش‌گیری جامع ---
+app.get('/api/v1/pharmacy/reports/full', authenticateToken, async (req, res) => {
+    try {
+        const { username } = req.user;
+        const { startDate, endDate } = req.query;
+        if (!startDate || !endDate) {
+            return res.status(400).json({ message: 'بازه زمانی (startDate, endDate) الزامی است.' });
+        }
+        const userResult = await pool.query('SELECT pharmacy_id FROM users WHERE username = $1', [username]);
+        if (userResult.rows.length === 0 || !userResult.rows[0].pharmacy_id) {
+            return res.status(404).json({ message: 'داروخانه یافت نشد.' });
+        }
+        const pharmacyId = userResult.rows[0].pharmacy_id;
+        const reportResult = await pool.query(
+            `SELECT * FROM prescriptions 
+             WHERE pharmacy_id = $1 
+             AND settled_at IS NOT NULL 
+             AND DATE(settled_at) BETWEEN $2 AND $3
+             ORDER BY settled_at DESC`,
+            [pharmacyId, startDate, endDate]
+        );
+        res.json(reportResult.rows);
+    } catch (error) {
+        console.error('Error fetching full report:', error);
+        res.status(500).json({ message: 'خطای داخلی سرور' });
+    }
+});
+
 app.post('/api/v1/prescriptions/:id/settle', authenticateToken, async (req, res) => {
     try {
         const prescriptionId = req.params.id;
@@ -154,3 +182,4 @@ const port = 3000;
 app.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);
 });
+

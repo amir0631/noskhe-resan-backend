@@ -4,9 +4,9 @@ const { Pool } = require('pg');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const fs = require('fs');
 
 const app = express();
-const port = 3000;
 const JWT_SECRET = 'your_super_secret_key_that_should_be_in_env_file';
 
 // --- Middlewares ---
@@ -30,7 +30,7 @@ const authenticateToken = (req, res, next) => {
     });
 };
 
-// --- API های کاربران و احراز هویت ---
+// --- API Endpoints ---
 app.post('/api/v1/users/login', async (req, res) => {
     try {
         const { username, password } = req.body;
@@ -49,7 +49,6 @@ app.post('/api/v1/users/login', async (req, res) => {
     } catch (error) { res.status(500).json({ message: 'خطای داخلی سرور' }); }
 });
 
-// --- API های پنل ادمین کل ---
 app.get('/api/v1/pharmacies', async (req, res) => {
     try {
         const result = await pool.query('SELECT p.id, p.name, p.address, u.username FROM pharmacies p LEFT JOIN users u ON p.id = u.pharmacy_id ORDER BY p.id DESC');
@@ -75,64 +74,17 @@ app.post('/api/v1/pharmacies', async (req, res) => {
     } finally { client.release(); }
 });
 
-// --- API های پنل داروخانه ---
 app.get('/api/v1/pharmacy/prescriptions', authenticateToken, async (req, res) => {
     try {
         const username = req.user.username;
         const userResult = await pool.query('SELECT pharmacy_id FROM users WHERE username = $1', [username]);
-        if (userResult.rows.length === 0 || !userResult.rows[0].pharmacy_id) {
-            return res.status(404).json({ message: 'داروخانه مربوط به این کاربر یافت نشد.' });
-        }
+        if (userResult.rows.length === 0 || !userResult.rows[0].pharmacy_id) return res.status(404).json({ message: 'داروخانه مربوط به این کاربر یافت نشد.' });
         const pharmacyId = userResult.rows[0].pharmacy_id;
-
-        // --- تغییر اصلی اینجاست: تمام ستون‌ها، از جمله زمان‌ها، انتخاب می‌شوند ---
-        const prescriptionsResult = await pool.query(
-            "SELECT * FROM prescriptions WHERE pharmacy_id = $1 AND settled_at IS NULL ORDER BY created_at DESC",
-            [pharmacyId]
-        );
-        
+        const prescriptionsResult = await pool.query("SELECT * FROM prescriptions WHERE pharmacy_id = $1 AND settled_at IS NULL ORDER BY created_at DESC", [pharmacyId]);
         res.json(prescriptionsResult.rows);
-    } catch (error) {
-        console.error('Error fetching pharmacy prescriptions:', error);
-        res.status(500).json({ message: 'خطای داخلی سرور' });
-    }
+    } catch (error) { res.status(500).json({ message: 'خطای داخلی سرور' }); }
 });
 
-// --- API جدید برای گزارش‌گیری جامع ---
-app.get('/api/v1/pharmacy/reports/full', authenticateToken, async (req, res) => {
-    try {
-        const { username } = req.user;
-        const { startDate, endDate } = req.query;
-
-        if (!startDate || !endDate) {
-            return res.status(400).json({ message: 'بازه زمانی (startDate, endDate) الزامی است.' });
-        }
-
-        const userResult = await pool.query('SELECT pharmacy_id FROM users WHERE username = $1', [username]);
-        if (userResult.rows.length === 0 || !userResult.rows[0].pharmacy_id) {
-            return res.status(404).json({ message: 'داروخانه یافت نشد.' });
-        }
-        const pharmacyId = userResult.rows[0].pharmacy_id;
-
-        // تمام جزئیات نسخه‌های تسویه شده در بازه زمانی مشخص شده را انتخاب می‌کنیم
-        const reportResult = await pool.query(
-            `SELECT * FROM prescriptions 
-             WHERE pharmacy_id = $1 
-             AND settled_at IS NOT NULL 
-             AND DATE(settled_at) BETWEEN $2 AND $3
-             ORDER BY settled_at DESC`,
-            [pharmacyId, startDate, endDate]
-        );
-        
-        res.json(reportResult.rows);
-
-    } catch (error) {
-        console.error('Error fetching full report:', error);
-        res.status(500).json({ message: 'خطای داخلی سرور' });
-    }
-});
-
-// --- API های عمومی (PWA کاربر) ---
 app.post('/api/v1/prescriptions/submit', async (req, res) => {
     try {
         const { nationalId, trackingCode, insuranceType } = req.body;
@@ -176,34 +128,19 @@ app.put('/api/v1/prescriptions/:id/status', authenticateToken, async (req, res) 
         const prescriptionId = req.params.id;
         const { newStatus } = req.body;
         const allowedStatuses = ['preparing', 'ready', 'rejected'];
-        if (!newStatus || !allowedStatuses.includes(newStatus)) {
-            return res.status(400).json({ success: false, message: 'وضعیت جدید نامعتبر است.' });
+        if (!newStatus || !allowedStatuses.includes(newStatus)) return res.status(400).json({ success: false, message: 'وضعیت جدید نامعتبر است.' });
+        let queryText;
+        if (newStatus === 'preparing') {
+            queryText = "UPDATE prescriptions SET status = $1, processing_started_at = NOW() WHERE id = $2";
+        } else if (newStatus === 'ready' || newStatus === 'rejected') {
+            queryText = "UPDATE prescriptions SET status = $1, completed_at = NOW() WHERE id = $2";
+        } else {
+            queryText = "UPDATE prescriptions SET status = $1 WHERE id = $2";
         }
-        
-        let queryText = '';
-        const queryParams = [newStatus, prescriptionId];
-
-        // بر اساس وضعیت جدید، ستون زمان مربوطه را آپدیت می‌کنیم
-        switch (newStatus) {
-            case 'preparing':
-                queryText = "UPDATE prescriptions SET status = $1, processing_started_at = NOW() WHERE id = $2";
-                break;
-            case 'ready':
-            case 'rejected':
-                queryText = "UPDATE prescriptions SET status = $1, completed_at = NOW() WHERE id = $2";
-                break;
-            default:
-                queryText = "UPDATE prescriptions SET status = $1 WHERE id = $2";
-        }
-        
-        await pool.query(queryText, queryParams);
+        await pool.query(queryText, [newStatus, prescriptionId]);
         res.status(200).json({ success: true, message: 'وضعیت سفارش با موفقیت به‌روز شد.' });
-    } catch (error) {
-        console.error('Error in status update endpoint:', error);
-        res.status(500).json({ success: false, message: 'خطا در به‌روزرسانی وضعیت سفارش.' });
-    }
+    } catch (error) { res.status(500).json({ success: false, message: 'خطا در به‌روزرسانی وضعیت سفارش.' }); }
 });
-
 
 app.post('/api/v1/prescriptions/:id/settle', authenticateToken, async (req, res) => {
     try {
@@ -213,8 +150,7 @@ app.post('/api/v1/prescriptions/:id/settle', authenticateToken, async (req, res)
     } catch (error) { res.status(500).json({ message: 'خطا در تسویه حساب.' }); }
 });
 
-app.listen(port, () => console.log(`Server listening on http://localhost:${port}`));
-
-
-
-
+const port = 3000;
+app.listen(port, () => {
+  console.log(`Server listening on http://localhost:${port}`);
+});

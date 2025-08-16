@@ -173,11 +173,10 @@ app.get('/api/v1/pharmacy/reports/full', authenticateToken, async (req, res) => 
 app.post('/api/v1/prescriptions/:id/settle', authenticateToken, async (req, res) => {
     try {
         const prescriptionId = req.params.id;
-        // هم زمان تسویه و هم وضعیت جدید را در دیتابیس ثبت می‌کنیم
+        // هم زمان و هم وضعیت را آپدیت می‌کنیم
         await pool.query("UPDATE prescriptions SET settled_at = NOW(), status = 'settled' WHERE id = $1", [prescriptionId]);
         res.status(200).json({ success: true, message: 'سفارش با موفقیت تسویه شد.' });
     } catch (error) {
-        console.error('Error in settle endpoint:', error);
         res.status(500).json({ message: 'خطا در تسویه حساب.' });
     }
 });
@@ -186,5 +185,6 @@ const port = 3000;
 app.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);
 });
+
 
 

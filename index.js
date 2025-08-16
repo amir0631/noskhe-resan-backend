@@ -1,4 +1,4 @@
-// index.js (نسخه نهایی، کامل و بازبینی شده)
+// index.js (نسخه کامل و نهایی با تمام قابلیت‌ها)
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
@@ -30,7 +30,7 @@ const authenticateToken = (req, res, next) => {
     });
 };
 
-// --- API Endpoints ---
+// --- API های کاربران و احراز هویت ---
 app.post('/api/v1/users/login', async (req, res) => {
     try {
         const { username, password } = req.body;
@@ -49,6 +49,7 @@ app.post('/api/v1/users/login', async (req, res) => {
     } catch (error) { res.status(500).json({ message: 'خطای داخلی سرور' }); }
 });
 
+// --- API های پنل ادمین کل ---
 app.get('/api/v1/pharmacies', async (req, res) => {
     try {
         const result = await pool.query('SELECT p.id, p.name, p.address, u.username FROM pharmacies p LEFT JOIN users u ON p.id = u.pharmacy_id ORDER BY p.id DESC');
@@ -74,6 +75,7 @@ app.post('/api/v1/pharmacies', async (req, res) => {
     } finally { client.release(); }
 });
 
+// --- API های پنل داروخانه ---
 app.get('/api/v1/pharmacy/prescriptions', authenticateToken, async (req, res) => {
     try {
         const username = req.user.username;
@@ -85,6 +87,23 @@ app.get('/api/v1/pharmacy/prescriptions', authenticateToken, async (req, res) =>
     } catch (error) { res.status(500).json({ message: 'خطای داخلی سرور' }); }
 });
 
+app.get('/api/v1/pharmacy/reports/full', authenticateToken, async (req, res) => {
+    try {
+        const { username } = req.user;
+        const { startDate, endDate } = req.body; // should be req.query for GET
+        if (!startDate || !endDate) return res.status(400).json({ message: 'بازه زمانی (startDate, endDate) الزامی است.' });
+        const userResult = await pool.query('SELECT pharmacy_id FROM users WHERE username = $1', [username]);
+        if (userResult.rows.length === 0 || !userResult.rows[0].pharmacy_id) return res.status(404).json({ message: 'داروخانه یافت نشد.' });
+        const pharmacyId = userResult.rows[0].pharmacy_id;
+        const reportResult = await pool.query(
+            `SELECT * FROM prescriptions WHERE pharmacy_id = $1 AND settled_at IS NOT NULL AND DATE(settled_at) BETWEEN $2 AND $3 ORDER BY settled_at DESC`,
+            [pharmacyId, startDate, endDate]
+        );
+        res.json(reportResult.rows);
+    } catch (error) { res.status(500).json({ message: 'خطای داخلی سرور' }); }
+});
+
+// --- API های عمومی (PWA کاربر) ---
 app.post('/api/v1/prescriptions/submit', async (req, res) => {
     try {
         const { nationalId, trackingCode, insuranceType } = req.body;
@@ -109,9 +128,13 @@ app.post('/api/v1/prescriptions/:id/select-pharmacy', async (req, res) => {
 app.get('/api/v1/prescriptions/:id/status', async (req, res) => {
     try {
         const prescriptionId = req.params.id;
-        const result = await pool.query('SELECT status, tracking_code FROM prescriptions WHERE id = $1', [prescriptionId]);
+        const result = await pool.query(
+            `SELECT p.status, p.tracking_code, ph.name as pharmacy_name, ph.address as pharmacy_address, ph.latitude, ph.longitude
+             FROM prescriptions p LEFT JOIN pharmacies ph ON p.pharmacy_id = ph.id WHERE p.id = $1`, 
+            [prescriptionId]
+        );
         if (result.rows.length === 0) return res.status(404).json({ success: false, message: 'سفارش یافت نشد.' });
-        res.status(200).json({ success: true, status: result.rows[0].status, trackingCode: result.rows[0].tracking_code });
+        res.status(200).json({ success: true, ...result.rows[0] });
     } catch (error) { res.status(500).json({ success: false, message: 'خطا در دریافت وضعیت سفارش.' }); }
 });
 
@@ -142,48 +165,15 @@ app.put('/api/v1/prescriptions/:id/status', authenticateToken, async (req, res) 
     } catch (error) { res.status(500).json({ success: false, message: 'خطا در به‌روزرسانی وضعیت سفارش.' }); }
 });
 
-// --- API جدید برای گزارش‌گیری جامع ---
-app.get('/api/v1/pharmacy/reports/full', authenticateToken, async (req, res) => {
-    try {
-        const { username } = req.user;
-        const { startDate, endDate } = req.query;
-        if (!startDate || !endDate) {
-            return res.status(400).json({ message: 'بازه زمانی (startDate, endDate) الزامی است.' });
-        }
-        const userResult = await pool.query('SELECT pharmacy_id FROM users WHERE username = $1', [username]);
-        if (userResult.rows.length === 0 || !userResult.rows[0].pharmacy_id) {
-            return res.status(404).json({ message: 'داروخانه یافت نشد.' });
-        }
-        const pharmacyId = userResult.rows[0].pharmacy_id;
-        const reportResult = await pool.query(
-            `SELECT * FROM prescriptions 
-             WHERE pharmacy_id = $1 
-             AND settled_at IS NOT NULL 
-             AND DATE(settled_at) BETWEEN $2 AND $3
-             ORDER BY settled_at DESC`,
-            [pharmacyId, startDate, endDate]
-        );
-        res.json(reportResult.rows);
-    } catch (error) {
-        console.error('Error fetching full report:', error);
-        res.status(500).json({ message: 'خطای داخلی سرور' });
-    }
-});
-
 app.post('/api/v1/prescriptions/:id/settle', authenticateToken, async (req, res) => {
     try {
         const prescriptionId = req.params.id;
-        // هم زمان تسویه و هم وضعیت جدید را در دیتابیس ثبت می‌کنیم
         await pool.query("UPDATE prescriptions SET settled_at = NOW(), status = 'settled' WHERE id = $1", [prescriptionId]);
         res.status(200).json({ success: true, message: 'سفارش با موفقیت تسویه شد.' });
-    } catch (error) {
-        console.error('Error in settle endpoint:', error);
-        res.status(500).json({ message: 'خطا در تسویه حساب.' });
-    }
+    } catch (error) { res.status(500).json({ message: 'خطا در تسویه حساب.' }); }
 });
 
 const port = 3000;
 app.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);
 });
-

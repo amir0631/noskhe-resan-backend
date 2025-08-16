@@ -1,4 +1,4 @@
-// index.js (نسخه کامل و اصلاح شده با افزودن API تاریخچه)
+// index.js (نسخه کامل، نهایی و یکپارچه)
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
@@ -50,8 +50,30 @@ app.post('/api/v1/users/login', async (req, res) => {
 });
 
 // --- API های پنل ادمین کل ---
-app.get('/api/v1/pharmacies', async (req, res) => { /* ... کد قبلی ... */ });
-app.post('/api/v1/pharmacies', async (req, res) => { /* ... کد قبلی ... */ });
+app.get('/api/v1/pharmacies', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT p.id, p.name, p.address, u.username FROM pharmacies p LEFT JOIN users u ON p.id = u.pharmacy_id ORDER BY p.id DESC');
+        res.json(result.rows);
+    } catch (error) { res.status(500).json({ message: 'خطا در دریافت لیست داروخانه‌ها' }); }
+});
+
+app.post('/api/v1/pharmacies', async (req, res) => {
+    const { name, address, latitude, longitude, username, password } = req.body;
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const pharmacyResult = await client.query('INSERT INTO pharmacies (name, address, latitude, longitude) VALUES ($1, $2, $3, $4) RETURNING id', [name, address, latitude || 0, longitude || 0]);
+        const newPharmacyId = pharmacyResult.rows[0].id;
+        await client.query("INSERT INTO users (username, password_hash, pharmacy_id, role) VALUES ($1, $2, $3, 'pharmacy_admin')", [username, hashedPassword, newPharmacyId]);
+        await client.query('COMMIT');
+        res.status(201).json({ message: 'داروخانه با موفقیت ایجاد شد.' });
+    } catch (error) {
+        await client.query('ROLLBACK');
+        if (error.code === '23505') res.status(409).json({ message: 'نام کاربری یا نام داروخانه تکراری است.' });
+        else res.status(500).json({ message: 'خطای داخلی سرور.' });
+    } finally { client.release(); }
+});
 
 // --- API های پنل داروخانه ---
 app.get('/api/v1/pharmacy/prescriptions', authenticateToken, async (req, res) => {
@@ -65,32 +87,20 @@ app.get('/api/v1/pharmacy/prescriptions', authenticateToken, async (req, res) =>
     } catch (error) { res.status(500).json({ message: 'خطای داخلی سرور' }); }
 });
 
-app.put('/api/v1/prescriptions/:id/status', authenticateToken, async (req, res) => {
+app.get('/api/v1/pharmacy/reports/full', authenticateToken, async (req, res) => {
     try {
-        const prescriptionId = req.params.id;
-        const { newStatus } = req.body;
-        const allowedStatuses = ['preparing', 'ready', 'rejected'];
-        if (!newStatus || !allowedStatuses.includes(newStatus)) return res.status(400).json({ success: false, message: 'وضعیت جدید نامعتبر است.' });
-        
-        let queryText;
-        if (newStatus === 'preparing') {
-            queryText = "UPDATE prescriptions SET status = $1, processing_started_at = NOW() WHERE id = $2";
-        } else if (newStatus === 'ready' || newStatus === 'rejected') {
-            queryText = "UPDATE prescriptions SET status = $1, completed_at = NOW() WHERE id = $2";
-        } else {
-            queryText = "UPDATE prescriptions SET status = $1 WHERE id = $2";
-        }
-        await pool.query(queryText, [newStatus, prescriptionId]);
-        res.status(200).json({ success: true, message: 'وضعیت سفارش با موفقیت به‌روز شد.' });
-    } catch (error) { res.status(500).json({ success: false, message: 'خطا در به‌روزرسانی وضعیت سفارش.' }); }
-});
-
-app.post('/api/v1/prescriptions/:id/settle', authenticateToken, async (req, res) => {
-    try {
-        const prescriptionId = req.params.id;
-        await pool.query("UPDATE prescriptions SET settled_at = NOW(), status = 'settled' WHERE id = $1", [prescriptionId]);
-        res.status(200).json({ success: true, message: 'سفارش با موفقیت تسویه شد.' });
-    } catch (error) { res.status(500).json({ message: 'خطا در تسویه حساب.' }); }
+        const { username } = req.user;
+        const { startDate, endDate } = req.query;
+        if (!startDate || !endDate) return res.status(400).json({ message: 'بازه زمانی (startDate, endDate) الزامی است.' });
+        const userResult = await pool.query('SELECT pharmacy_id FROM users WHERE username = $1', [username]);
+        if (userResult.rows.length === 0 || !userResult.rows[0].pharmacy_id) return res.status(404).json({ message: 'داروخانه یافت نشد.' });
+        const pharmacyId = userResult.rows[0].pharmacy_id;
+        const reportResult = await pool.query(
+            `SELECT * FROM prescriptions WHERE pharmacy_id = $1 AND settled_at IS NOT NULL AND DATE(settled_at) BETWEEN $2 AND $3 ORDER BY settled_at DESC`,
+            [pharmacyId, startDate, endDate]
+        );
+        res.json(reportResult.rows);
+    } catch (error) { res.status(500).json({ message: 'خطای داخلی سرور' }); }
 });
 
 // --- API های عمومی (PWA کاربر) ---
@@ -120,9 +130,7 @@ app.get('/api/v1/prescriptions/:id/status', async (req, res) => {
         const prescriptionId = req.params.id;
         const result = await pool.query(
             `SELECT p.status, p.tracking_code, ph.name as pharmacy_name, ph.address as pharmacy_address, ph.latitude, ph.longitude
-             FROM prescriptions p
-             LEFT JOIN pharmacies ph ON p.pharmacy_id = ph.id
-             WHERE p.id = $1`, 
+             FROM prescriptions p LEFT JOIN pharmacies ph ON p.pharmacy_id = ph.id WHERE p.id = $1`, 
             [prescriptionId]
         );
         if (result.rows.length === 0) return res.status(404).json({ success: false, message: 'سفارش یافت نشد.' });
@@ -130,21 +138,40 @@ app.get('/api/v1/prescriptions/:id/status', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, message: 'خطا در دریافت وضعیت سفارش.' }); }
 });
 
-// --- تگ گذاری: بخش اضافه شده برای رفع مشکل ---
 app.get('/api/v1/prescriptions/history/:nationalId', async (req, res) => {
     try {
         const { nationalId } = req.params;
-        const result = await pool.query(
-            'SELECT id, tracking_code, status, insurance_type, created_at FROM prescriptions WHERE national_id = $1 ORDER BY created_at DESC',
-            [nationalId]
-        );
+        const result = await pool.query('SELECT id, tracking_code, status, insurance_type, created_at FROM prescriptions WHERE national_id = $1 ORDER BY created_at DESC', [nationalId]);
         res.status(200).json(result.rows);
-    } catch (error) {
-        console.error('Error in /history endpoint:', error);
-        res.status(500).json({ success: false, message: 'خطا در دریافت تاریخچه سفارشات.' });
-    }
+    } catch (error) { res.status(500).json({ success: false, message: 'خطا در دریافت تاریخچه سفارشات.' }); }
 });
-// --- پایان بخش اضافه شده ---
+
+app.put('/api/v1/prescriptions/:id/status', authenticateToken, async (req, res) => {
+    try {
+        const prescriptionId = req.params.id;
+        const { newStatus } = req.body;
+        const allowedStatuses = ['preparing', 'ready', 'rejected'];
+        if (!newStatus || !allowedStatuses.includes(newStatus)) return res.status(400).json({ success: false, message: 'وضعیت جدید نامعتبر است.' });
+        let queryText;
+        if (newStatus === 'preparing') {
+            queryText = "UPDATE prescriptions SET status = $1, processing_started_at = NOW() WHERE id = $2";
+        } else if (newStatus === 'ready' || newStatus === 'rejected') {
+            queryText = "UPDATE prescriptions SET status = $1, completed_at = NOW() WHERE id = $2";
+        } else {
+            queryText = "UPDATE prescriptions SET status = $1 WHERE id = $2";
+        }
+        await pool.query(queryText, [newStatus, prescriptionId]);
+        res.status(200).json({ success: true, message: 'وضعیت سفارش با موفقیت به‌روز شد.' });
+    } catch (error) { res.status(500).json({ success: false, message: 'خطا در به‌روزرسانی وضعیت سفارش.' }); }
+});
+
+app.post('/api/v1/prescriptions/:id/settle', authenticateToken, async (req, res) => {
+    try {
+        const prescriptionId = req.params.id;
+        await pool.query("UPDATE prescriptions SET settled_at = NOW(), status = 'settled' WHERE id = $1", [prescriptionId]);
+        res.status(200).json({ success: true, message: 'سفارش با موفقیت تسویه شد.' });
+    } catch (error) { res.status(500).json({ message: 'خطا در تسویه حساب.' }); }
+});
 
 const port = 3000;
 app.listen(port, () => {

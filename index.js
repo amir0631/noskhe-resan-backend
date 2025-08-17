@@ -82,8 +82,14 @@ app.get('/api/v1/pharmacy/prescriptions', authenticateToken, async (req, res) =>
         const userResult = await pool.query('SELECT pharmacy_id FROM users WHERE username = $1', [username]);
         if (userResult.rows.length === 0 || !userResult.rows[0].pharmacy_id) return res.status(404).json({ message: 'داروخانه مربوط به این کاربر یافت نشد.' });
         const pharmacyId = userResult.rows[0].pharmacy_id;
-        const prescriptionsResult = await pool.query("SELECT * FROM prescriptions WHERE pharmacy_id = $1 AND settled_at IS NULL ORDER BY created_at DESC", [pharmacyId]);
-        res.json(prescriptionsResult.rows);
+        const prescriptionsResult = await pool.query(
+            `SELECT * FROM prescriptions 
+             WHERE pharmacy_id = $1 
+             AND (settled_at IS NULL OR settled_at > NOW() - INTERVAL '24 hours')
+             ORDER BY created_at DESC`,
+            [pharmacyId]
+        );
+      res.json(prescriptionsResult.rows);
     } catch (error) { res.status(500).json({ message: 'خطای داخلی سرور' }); }
 });
 
@@ -225,4 +231,5 @@ app.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);
 
 });
+
 

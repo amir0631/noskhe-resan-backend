@@ -183,16 +183,27 @@ app.get('/api/v1/pharmacies/:id', async (req, res) => {
 // --- API جدید: به‌روزرسانی اطلاعات یک داروخانه ---
 app.put('/api/v1/pharmacies/:id', async (req, res) => {
     const { id } = req.params;
-    const { name, address, latitude, longitude, username } = req.body;
+    const { name, address, latitude, longitude, username, password } = req.body;
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
         await client.query('UPDATE pharmacies SET name = $1, address = $2, latitude = $3, longitude = $4 WHERE id = $5', [name, address, latitude || 0, longitude || 0, id]);
         await client.query('UPDATE users SET username = $1 WHERE pharmacy_id = $2', [username, id]);
+
+      // اگر رمز عبور جدیدی ارسال شده بود، آن را هش و ذخیره کن
+      if (password && password.trim() !== '') {
+            const hashedPassword = await bcrypt.hash(password, 10);
+            await client.query(
+                'UPDATE users SET password_hash = $1 WHERE pharmacy_id = $2',
+                [hashedPassword, id]
+            );
+        }
+      
         await client.query('COMMIT');
         res.status(200).json({ message: 'داروخانه با موفقیت به‌روز شد.' });
     } catch (error) {
         await client.query('ROLLBACK');
+        console.error('Error in PUT /pharmacies/:id:', error);
         if (error.code === '23505') {
             res.status(409).json({ message: 'این نام کاربری قبلاً استفاده شده است.' });
         } else {
@@ -214,3 +225,4 @@ app.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);
 
 });
+

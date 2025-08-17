@@ -96,7 +96,7 @@ app.get('/api/v1/pharmacy/prescriptions', authenticateToken, async (req, res) =>
 app.get('/api/v1/pharmacy/reports/full', authenticateToken, async (req, res) => {
     try {
         const { username } = req.user;
-        const { startDate, endDate } = req.body; // should be req.query for GET
+        const { startDate, endDate } = req.query; // should be req.query for GET
         if (!startDate || !endDate) return res.status(400).json({ message: 'بازه زمانی (startDate, endDate) الزامی است.' });
         const userResult = await pool.query('SELECT pharmacy_id FROM users WHERE username = $1', [username]);
         if (userResult.rows.length === 0 || !userResult.rows[0].pharmacy_id) return res.status(404).json({ message: 'داروخانه یافت نشد.' });
@@ -231,5 +231,6 @@ app.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);
 
 });
+
 
 

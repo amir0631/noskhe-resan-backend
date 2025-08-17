@@ -52,18 +52,22 @@ app.post('/api/v1/users/login', async (req, res) => {
 // --- API های پنل ادمین کل ---
 app.get('/api/v1/pharmacies', async (req, res) => {
     try {
-        const result = await pool.query('SELECT p.id, p.name, p.address, u.username FROM pharmacies p LEFT JOIN users u ON p.id = u.pharmacy_id ORDER BY p.id DESC');
+        // دو فیلد جدید به لیست SELECT اضافه شده است
+        const result = await pool.query('SELECT p.id, p.name, p.address, p.is_active, p.is_24_hours, u.username FROM pharmacies p LEFT JOIN users u ON p.id = u.pharmacy_id ORDER BY p.id DESC');
         res.json(result.rows);
     } catch (error) { res.status(500).json({ message: 'خطا در دریافت لیست داروخانه‌ها' }); }
 });
 
 app.post('/api/v1/pharmacies', async (req, res) => {
-    const { name, address, latitude, longitude, username, password } = req.body;
+    const { name, address, latitude, longitude, username, password, is_active, is_24_hours } = req.body;
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
         const hashedPassword = await bcrypt.hash(password, 10);
-        const pharmacyResult = await client.query('INSERT INTO pharmacies (name, address, latitude, longitude) VALUES ($1, $2, $3, $4) RETURNING id', [name, address, latitude || 0, longitude || 0]);
+        const pharmacyResult = await client.query(
+            'INSERT INTO pharmacies (name, address, latitude, longitude, is_active, is_24_hours) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+            [name, address, latitude || 0, longitude || 0, is_active, is_24_hours]
+        );
         const newPharmacyId = pharmacyResult.rows[0].id;
         await client.query("INSERT INTO users (username, password_hash, pharmacy_id, role) VALUES ($1, $2, $3, 'pharmacy_admin')", [username, hashedPassword, newPharmacyId]);
         await client.query('COMMIT');
@@ -231,6 +235,7 @@ app.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);
 
 });
+
 
 
 

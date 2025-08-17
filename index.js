@@ -59,11 +59,13 @@ app.get('/api/v1/pharmacies', async (req, res) => {
 });
 
 app.post('/api/v1/pharmacies', async (req, res) => {
+    // دو فیلد جدید از ورودی خوانده می‌شود
     const { name, address, latitude, longitude, username, password, is_active, is_24_hours } = req.body;
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
         const hashedPassword = await bcrypt.hash(password, 10);
+        // دو فیلد جدید در کوئری INSERT لحاظ شده است
         const pharmacyResult = await client.query(
             'INSERT INTO pharmacies (name, address, latitude, longitude, is_active, is_24_hours) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
             [name, address, latitude || 0, longitude || 0, is_active, is_24_hours]
@@ -235,6 +237,7 @@ app.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);
 
 });
+
 
 
 

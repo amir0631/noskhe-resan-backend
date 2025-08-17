@@ -165,33 +165,40 @@ app.put('/api/v1/prescriptions/:id/status', authenticateToken, async (req, res) 
     } catch (error) { res.status(500).json({ success: false, message: 'خطا در به‌روزرسانی وضعیت سفارش.' }); }
 });
 
+// --- API جدید: دریافت اطلاعات یک داروخانه خاص ---
+app.get('/api/v1/pharmacies/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const result = await pool.query(
+            'SELECT p.id, p.name, p.address, p.latitude, p.longitude, u.username FROM pharmacies p LEFT JOIN users u ON p.id = u.pharmacy_id WHERE p.id = $1',
+            [id]
+        );
+        if (result.rows.length === 0) {
+            return res.status(404).json({ message: 'داروخانه یافت نشد.' });
+        }
+        res.json(result.rows[0]);
+    } catch (error) { res.status(500).json({ message: 'خطای داخلی سرور' }); }
+});
+
+// --- API جدید: به‌روزرسانی اطلاعات یک داروخانه ---
 app.put('/api/v1/pharmacies/:id', async (req, res) => {
     const { id } = req.params;
     const { name, address, latitude, longitude, username } = req.body;
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        await client.query(
-            'UPDATE pharmacies SET name = $1, address = $2, latitude = $3, longitude = $4 WHERE id = $5',
-            [name, address, latitude || 0, longitude || 0, id]
-        );
-        await client.query(
-            'UPDATE users SET username = $1 WHERE pharmacy_id = $2',
-            [username, id]
-        );
+        await client.query('UPDATE pharmacies SET name = $1, address = $2, latitude = $3, longitude = $4 WHERE id = $5', [name, address, latitude || 0, longitude || 0, id]);
+        await client.query('UPDATE users SET username = $1 WHERE pharmacy_id = $2', [username, id]);
         await client.query('COMMIT');
         res.status(200).json({ message: 'داروخانه با موفقیت به‌روز شد.' });
     } catch (error) {
         await client.query('ROLLBACK');
-        console.error('Error in PUT /pharmacies/:id:', error);
         if (error.code === '23505') {
             res.status(409).json({ message: 'این نام کاربری قبلاً استفاده شده است.' });
         } else {
             res.status(500).json({ message: 'خطای داخلی سرور.' });
         }
-    } finally {
-        client.release();
-    }
+    } finally { client.release(); }
 });
 
 app.post('/api/v1/prescriptions/:id/settle', authenticateToken, async (req, res) => {
@@ -205,4 +212,5 @@ app.post('/api/v1/prescriptions/:id/settle', authenticateToken, async (req, res)
 const port = 3000;
 app.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);
+
 });

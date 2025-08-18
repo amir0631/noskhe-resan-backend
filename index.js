@@ -209,6 +209,31 @@ app.post('/api/v1/prescriptions/:id/settle', authenticateToken, async (req, res)
     } catch (error) { res.status(500).json({ message: 'خطا در تسویه حساب.' }); }
 });
 
+// --- API جدید برای لغو سفارش توسط کاربر ---
+app.put('/api/v1/prescriptions/:id/cancel', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        // ابتدا وضعیت فعلی را چک می‌کنیم
+        const current = await pool.query('SELECT status FROM prescriptions WHERE id = $1', [id]);
+        if (current.rows.length === 0) {
+            return res.status(404).json({ message: 'سفارش یافت نشد.' });
+        }
+        
+        const currentStatus = current.rows[0].status;
+        // فقط در این وضعیت‌ها امکان لغو وجود دارد
+        if (['pending', 'pharmacy_selected', 'preparing'].includes(currentStatus)) {
+            await pool.query("UPDATE prescriptions SET status = 'cancelled_by_user' WHERE id = $1", [id]);
+            res.status(200).json({ success: true, message: 'سفارش با موفقیت لغو شد.' });
+        } else {
+            // اگر وضعیت 'ready' یا بالاتر بود، دیگر امکان لغو نیست
+            res.status(403).json({ success: false, message: 'امکان لغو این سفارش وجود ندارد.' });
+        }
+    } catch (error) {
+        console.error('Error in /cancel endpoint:', error);
+        res.status(500).json({ success: false, message: 'خطای داخلی سرور.' });
+    }
+});
 
 app.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);

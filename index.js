@@ -144,7 +144,6 @@ app.post('/api/v1/prescriptions/submit', async (req, res) => {
     try {
         const { nationalId, trackingCode, insuranceType } = req.body;
         if (!nationalId || !trackingCode || !insuranceType) return res.status(400).json({ success: false, message: 'تمام اطلاعات الزامی است.' });
-        const existingPrescription = await pool.query('SELECT id FROM prescriptions WHERE tracking_code = $1', [trackingCode]);
         const existingPrescription = await pool.query('SELECT id, status FROM prescriptions WHERE tracking_code = $1', [trackingCode]);
         if (existingPrescription.rows.length > 0) {
             // اگر نسخه تکراری بود، یک پاسخ مشخص با کد 409 به همراه وضعیت فعلی آن برمی‌گردانیم

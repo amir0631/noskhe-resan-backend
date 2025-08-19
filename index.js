@@ -145,10 +145,25 @@ app.post('/api/v1/prescriptions/submit', async (req, res) => {
         const { nationalId, trackingCode, insuranceType } = req.body;
         if (!nationalId || !trackingCode || !insuranceType) return res.status(400).json({ success: false, message: 'تمام اطلاعات الزامی است.' });
         const existingPrescription = await pool.query('SELECT id FROM prescriptions WHERE tracking_code = $1', [trackingCode]);
-        if (existingPrescription.rows.length > 0) return res.status(409).json({ success: false, message: 'این کد رهگیری قبلاً ثبت شده است.' });
-        const result = await pool.query('INSERT INTO prescriptions (national_id, tracking_code, insurance_type) VALUES ($1, $2, $3) RETURNING id', [nationalId, trackingCode, insuranceType]);
+        const existingPrescription = await pool.query('SELECT id, status FROM prescriptions WHERE tracking_code = $1', [trackingCode]);
+        if (existingPrescription.rows.length > 0) {
+            // اگر نسخه تکراری بود، یک پاسخ مشخص با کد 409 به همراه وضعیت فعلی آن برمی‌گردانیم
+            return res.status(409).json({ 
+                success: false,
+                isDuplicate: true, 
+                message: 'این کد رهگیری قبلاً ثبت شده است.',
+                prescription: existingPrescription.rows[0] // شامل id و status
+            });
+        }
+        const result = await pool.query(
+            'INSERT INTO prescriptions (national_id, tracking_code, insurance_type) VALUES ($1, $2, $3) RETURNING id',
+            [nationalId, trackingCode, insuranceType]
+        );
         res.status(201).json({ success: true, message: 'نسخه شما با موفقیت ثبت شد.', prescriptionId: result.rows[0].id });
-    } catch (error) { res.status(500).json({ success: false, message: 'خطای داخلی سرور هنگام ثبت نسخه.' }); }
+    } catch (error) {
+        console.error('Error in /submit endpoint:', error);
+        res.status(500).json({ success: false, message: 'خطای داخلی سرور هنگام ثبت نسخه.' });
+    }
 });
 
 app.post('/api/v1/prescriptions/:id/select-pharmacy', async (req, res) => {

@@ -132,7 +132,11 @@ app.get('/api/v1/pharmacy/reports/full', authenticateToken, async (req, res) => 
         if (userResult.rows.length === 0 || !userResult.rows[0].pharmacy_id) return res.status(404).json({ message: 'داروخانه یافت نشد.' });
         const pharmacyId = userResult.rows[0].pharmacy_id;
         const reportResult = await pool.query(
-            `SELECT * FROM prescriptions WHERE pharmacy_id = $1 AND settled_at IS NOT NULL AND DATE(settled_at) BETWEEN $2 AND $3 ORDER BY settled_at DESC`,
+            `SELECT * FROM prescriptions 
+             WHERE pharmacy_id = $1 
+             AND status IN ('settled', 'rejected', 'cancelled_by_user')
+             AND DATE(completed_at) BETWEEN $2 AND $3
+             ORDER BY completed_at DESC`,
             [pharmacyId, startDate, endDate]
         );
         res.json(reportResult.rows);

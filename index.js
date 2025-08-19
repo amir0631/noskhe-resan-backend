@@ -317,6 +317,58 @@ app.put('/api/v1/prescriptions/:id/resubmit', async (req, res) => {
     }
 });
 
+با رعایت منشور توسعه
+
+باشه، حتماً. افزودن یک صفحه جستجوی پیشرفته، قابلیت بسیار مهمی برای مدیریت بهتر نسخه‌ها توسط داروخانه است. تیم فنی پس از مشورت، نقشه راه کامل زیر را برای پیاده‌سازی این قابلیت آماده کرده است.
+
+۱. به‌روزرسانی بک‌اند (افزودن API جستجو)
+ما یک API جدید برای جستجو در میان نسخه‌های یک داروخانه خاص ایجاد می‌کنیم.
+
+۱. لطفاً فایل index.js را در پروژه بک‌اند خود باز کنید.
+۲. کد کامل API Endpoint جدید زیر را به بخش «API های پنل داروخانه» اضافه کنید:
+
+JavaScript
+
+// index.js (افزودن API جدید)
+
+// --- API جدید برای جستجوی نسخه ---
+app.get('/api/v1/pharmacy/search', authenticateToken, async (req, res) => {
+    try {
+        const { type, value } = req.query; // نوع و مقدار جستجو
+        const { username } = req.user;
+
+        if (!type || !value) {
+            return res.status(400).json({ message: 'نوع و مقدار جستجو الزامی است.' });
+        }
+
+        const userResult = await pool.query('SELECT pharmacy_id FROM users WHERE username = $1', [username]);
+        if (userResult.rows.length === 0 || !userResult.rows[0].pharmacy_id) {
+            return res.status(404).json({ message: 'داروخانه یافت نشد.' });
+        }
+        const pharmacyId = userResult.rows[0].pharmacy_id;
+
+        let queryText = 'SELECT * FROM prescriptions WHERE pharmacy_id = $1';
+        const queryParams = [pharmacyId, value];
+
+        if (type === 'nationalId') {
+            queryText += ' AND national_id = $2';
+        } else if (type === 'trackingCode') {
+            queryText += ' AND tracking_code = $2';
+        } else {
+            return res.status(400).json({ message: 'نوع جستجوی نامعتبر است. (nationalId or trackingCode)' });
+        }
+        
+        queryText += ' ORDER BY created_at DESC';
+        
+        const searchResult = await pool.query(queryText, queryParams);
+        res.json(searchResult.rows);
+
+    } catch (error) {
+        console.error('Error in search endpoint:', error);
+        res.status(500).json({ message: 'خطای داخلی سرور' });
+    }
+});
+
 
 app.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);

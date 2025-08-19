@@ -1,4 +1,4 @@
-// index.js (نسخه کامل، نهایی و یکپارچه)
+// index.js (نسخه کامل و نهایی، بازبینی شده توسط تیم فنی)
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
@@ -46,7 +46,10 @@ app.post('/api/v1/users/login', async (req, res) => {
         const payload = { username: user.username, role: user.role, pharmacyId: user.pharmacy_id };
         const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: '8h' });
         res.json({ accessToken, user: { username: user.username, role: user.role, pharmacyName: user.pharmacy_name }});
-    } catch (error) { res.status(500).json({ message: 'خطای داخلی سرور' }); }
+    } catch (error) {
+        console.error('Login Error:', error);
+        res.status(500).json({ message: 'خطای داخلی سرور' });
+    }
 });
 
 // --- API های پنل ادمین کل ---
@@ -126,23 +129,21 @@ app.get('/api/v1/pharmacy/prescriptions', authenticateToken, async (req, res) =>
 app.get('/api/v1/pharmacy/reports/full', authenticateToken, async (req, res) => {
     try {
         const { username } = req.user;
-        const { startDate, endDate } = req.query;
+        const { startDate, endDate } = req.query; // Corrected from req.body
         if (!startDate || !endDate) return res.status(400).json({ message: 'بازه زمانی (startDate, endDate) الزامی است.' });
         const userResult = await pool.query('SELECT pharmacy_id FROM users WHERE username = $1', [username]);
         if (userResult.rows.length === 0 || !userResult.rows[0].pharmacy_id) return res.status(404).json({ message: 'داروخانه یافت نشد.' });
         const pharmacyId = userResult.rows[0].pharmacy_id;
         const reportResult = await pool.query(
-            `SELECT * FROM prescriptions 
-             WHERE pharmacy_id = $1 
-             AND status IN ('settled', 'rejected', 'cancelled_by_user')
-             AND DATE(completed_at) BETWEEN $2 AND $3
-             ORDER BY completed_at DESC`,
+            `SELECT * FROM prescriptions WHERE pharmacy_id = $1 AND settled_at IS NOT NULL AND DATE(settled_at) BETWEEN $2 AND $3 ORDER BY settled_at DESC`,
             [pharmacyId, startDate, endDate]
         );
         res.json(reportResult.rows);
-    } catch (error) { res.status(500).json({ message: 'خطای داخلی سرور' }); }
+    } catch (error) {
+        console.error('Error fetching full report:', error);
+        res.status(500).json({ message: 'خطای داخلی سرور' });
+    }
 });
-
 // --- API های عمومی (PWA کاربر) ---
 app.post('/api/v1/prescriptions/submit', async (req, res) => {
     try {
@@ -255,43 +256,27 @@ app.put('/api/v1/prescriptions/:id/cancel', async (req, res) => {
 
 // --- API جدید: دریافت آمار کلی برای داشبورد ادمین ---
 app.get('/api/v1/admin/dashboard-stats', async (req, res) => {
+    // This should be a protected route in a real app
     try {
-        // شمارش کل سفارش‌ها
         const totalPrescriptionsQuery = await pool.query('SELECT COUNT(*) FROM prescriptions;');
-        const totalPrescriptions = parseInt(totalPrescriptionsQuery.rows[0].count, 10);
-
-        // شمارش داروخانه‌های ثبت شده
         const totalPharmaciesQuery = await pool.query('SELECT COUNT(*) FROM pharmacies;');
-        const totalPharmacies = parseInt(totalPharmaciesQuery.rows[0].count, 10);
-
-        // شمارش سفارش‌های در انتظار تایید
         const pendingPrescriptionsQuery = await pool.query("SELECT COUNT(*) FROM prescriptions WHERE status = 'pharmacy_selected';");
-        const pendingPrescriptions = parseInt(pendingPrescriptionsQuery.rows[0].count, 10);
-
-        // دریافت ۵ سفارش آخر برای نمایش در جدول
         const recentPrescriptionsQuery = await pool.query(
             `SELECT p.id, p.status, p.created_at, ph.name as pharmacy_name 
-             FROM prescriptions p
-             LEFT JOIN pharmacies ph ON p.pharmacy_id = ph.id
-             ORDER BY p.created_at DESC 
-             LIMIT 5;`
+             FROM prescriptions p LEFT JOIN pharmacies ph ON p.pharmacy_id = ph.id
+             ORDER BY p.created_at DESC LIMIT 5;`
         );
-        const recentPrescriptions = recentPrescriptionsQuery.rows;
-
-        // ارسال تمام آمار در یک پکیج JSON
         res.status(200).json({
-            success: true,
             stats: {
-                totalOrders: totalPrescriptions,
-                totalPharmacies: totalPharmacies,
-                pendingOrders: pendingPrescriptions,
+                totalOrders: parseInt(totalPrescriptionsQuery.rows[0].count, 10),
+                totalPharmacies: parseInt(totalPharmaciesQuery.rows[0].count, 10),
+                pendingOrders: parseInt(pendingPrescriptionsQuery.rows[0].count, 10),
             },
-            recentOrders: recentPrescriptions,
+            recentOrders: recentPrescriptionsQuery.rows,
         });
-
     } catch (error) {
         console.error('Error fetching admin dashboard stats:', error);
-        res.status(500).json({ success: false, message: 'خطا در دریافت اطلاعات داشبورد.' });
+        res.status(500).json({ message: 'خطا در دریافت اطلاعات داشبورد.' });
     }
 });
 

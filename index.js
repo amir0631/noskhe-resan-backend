@@ -241,7 +241,7 @@ app.put('/api/v1/prescriptions/:id/cancel', async (req, res) => {
         const currentStatus = current.rows[0].status;
         // فقط در این وضعیت‌ها امکان لغو وجود دارد
         if (['pending', 'pharmacy_selected', 'preparing'].includes(currentStatus)) {
-            await pool.query("UPDATE prescriptions SET status = 'cancelled_by_user' WHERE id = $1", [id]);
+            await pool.query("UPDATE prescriptions SET status = 'cancelled_by_user', completed_at = NOW() WHERE id = $1", [id]);
             res.status(200).json({ success: true, message: 'سفارش با موفقیت لغو شد.' });
         } else {
             // اگر وضعیت 'ready' یا بالاتر بود، دیگر امکان لغو نیست

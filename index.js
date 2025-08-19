@@ -277,6 +277,30 @@ app.get('/api/v1/admin/dashboard-stats', async (req, res) => {
     }
 });
 
+app.put('/api/v1/prescriptions/:id/resubmit', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        // ریست کردن وضعیت به حالت اولیه و پاک کردن اطلاعات قبلی
+        await pool.query(
+            `UPDATE prescriptions 
+             SET status = 'pending', 
+                 pharmacy_id = NULL, 
+                 pharmacy_assigned_at = NULL, 
+                 processing_started_at = NULL, 
+                 completed_at = NULL, 
+                 settled_at = NULL 
+             WHERE id = $1 AND status IN ('rejected', 'cancelled_by_user')`,
+            [id]
+        );
+        
+        res.status(200).json({ success: true, message: 'نسخه برای ثبت مجدد آماده شد.' });
+    } catch (error) {
+        console.error('Error in /resubmit endpoint:', error);
+        res.status(500).json({ success: false, message: 'خطای داخلی سرور.' });
+    }
+});
+
 
 app.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);

@@ -235,6 +235,49 @@ app.put('/api/v1/prescriptions/:id/cancel', async (req, res) => {
     }
 });
 
+// --- API جدید: دریافت آمار کلی برای داشبورد ادمین ---
+app.get('/api/v1/admin/dashboard-stats', async (req, res) => {
+    try {
+        // شمارش کل سفارش‌ها
+        const totalPrescriptionsQuery = await pool.query('SELECT COUNT(*) FROM prescriptions;');
+        const totalPrescriptions = parseInt(totalPrescriptionsQuery.rows[0].count, 10);
+
+        // شمارش داروخانه‌های ثبت شده
+        const totalPharmaciesQuery = await pool.query('SELECT COUNT(*) FROM pharmacies;');
+        const totalPharmacies = parseInt(totalPharmaciesQuery.rows[0].count, 10);
+
+        // شمارش سفارش‌های در انتظار تایید
+        const pendingPrescriptionsQuery = await pool.query("SELECT COUNT(*) FROM prescriptions WHERE status = 'pharmacy_selected';");
+        const pendingPrescriptions = parseInt(pendingPrescriptionsQuery.rows[0].count, 10);
+
+        // دریافت ۵ سفارش آخر برای نمایش در جدول
+        const recentPrescriptionsQuery = await pool.query(
+            `SELECT p.id, p.status, p.created_at, ph.name as pharmacy_name 
+             FROM prescriptions p
+             LEFT JOIN pharmacies ph ON p.pharmacy_id = ph.id
+             ORDER BY p.created_at DESC 
+             LIMIT 5;`
+        );
+        const recentPrescriptions = recentPrescriptionsQuery.rows;
+
+        // ارسال تمام آمار در یک پکیج JSON
+        res.status(200).json({
+            success: true,
+            stats: {
+                totalOrders: totalPrescriptions,
+                totalPharmacies: totalPharmacies,
+                pendingOrders: pendingPrescriptions,
+            },
+            recentOrders: recentPrescriptions,
+        });
+
+    } catch (error) {
+        console.error('Error fetching admin dashboard stats:', error);
+        res.status(500).json({ success: false, message: 'خطا در دریافت اطلاعات داشبورد.' });
+    }
+});
+
+
 app.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);
 });

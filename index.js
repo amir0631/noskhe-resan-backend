@@ -116,7 +116,9 @@ app.get('/api/v1/pharmacy/prescriptions', authenticateToken, async (req, res) =>
     try {
         const username = req.user.username;
         const userResult = await pool.query('SELECT pharmacy_id FROM users WHERE username = $1', [username]);
-        if (userResult.rows.length === 0 || !userResult.rows[0].pharmacy_id) return res.status(404).json({ message: 'داروخانه مربوط به این کاربر یافت نشد.' });
+        if (userResult.rows.length === 0 || !userResult.rows[0].pharmacy_id) {
+            return res.status(404).json({ message: 'داروخانه مربوط به این کاربر یافت نشد.' });
+        }
         const pharmacyId = userResult.rows[0].pharmacy_id;
         const prescriptionsResult = await pool.query(
             `SELECT * FROM prescriptions 
@@ -124,9 +126,9 @@ app.get('/api/v1/pharmacy/prescriptions', authenticateToken, async (req, res) =>
              AND (
                 status IN ('pharmacy_selected', 'preparing') 
                 OR 
-                (status IN ('ready', 'rejected') AND completed_at > NOW() - INTERVAL '24 hours')
+                (completed_at > NOW() - INTERVAL '24 hours')
                 OR
-                (status = 'settled' AND settled_at > NOW() - INTERVAL '24 hours')
+                (settled_at > NOW() - INTERVAL '24 hours')
              )
              ORDER BY created_at DESC`,
             [pharmacyId]

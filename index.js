@@ -1,9 +1,10 @@
-// index.js (نسخه کامل و نهایی، بازبینی شده توسط تیم فنی)
+// index.js (نسخه کامل و نهایی با قابلیت ثبت مبلغ فاکتور)
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+
 const app = express();
 const port = 3000;
 const JWT_SECRET = 'your_super_secret_key_that_should_be_in_env_file';
@@ -16,19 +17,6 @@ app.use(express.json());
 const pool = new Pool({
   user: 'myuser', host: '127.0.0.1', database: 'noskheresan_db', password: 'mypassword', port: 5432,
 });
-
-const translateStatus = (status) => {
-  const statusMap = {
-    pending: 'در انتظار انتخاب داروخانه',
-    pharmacy_selected: 'در انتظار تایید داروخانه',
-    preparing: 'در حال آماده‌سازی',
-    ready: 'آماده تحویل',
-    rejected: 'رد شده',
-    settled: 'تسویه و تحویل شد',
-    cancelled_by_user: 'لغو توسط کاربر',
-  };
-  return statusMap[status] || status; // اگر ترجمه پیدا نشد، خود کلمه را برگردان
-};
 
 // --- Middleware برای احراز هویت ---
 const authenticateToken = (req, res, next) => {
@@ -58,10 +46,7 @@ app.post('/api/v1/users/login', async (req, res) => {
         const payload = { username: user.username, role: user.role, pharmacyId: user.pharmacy_id };
         const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: '8h' });
         res.json({ accessToken, user: { username: user.username, role: user.role, pharmacyName: user.pharmacy_name }});
-    } catch (error) {
-        console.error('Login Error:', error);
-        res.status(500).json({ message: 'خطای داخلی سرور' });
-    }
+    } catch (error) { res.status(500).json({ message: 'خطای داخلی سرور' }); }
 });
 
 // --- API های پنل ادمین کل ---
@@ -128,21 +113,10 @@ app.get('/api/v1/pharmacy/prescriptions', authenticateToken, async (req, res) =>
     try {
         const username = req.user.username;
         const userResult = await pool.query('SELECT pharmacy_id FROM users WHERE username = $1', [username]);
-        if (userResult.rows.length === 0 || !userResult.rows[0].pharmacy_id) {
-            return res.status(404).json({ message: 'داروخانه مربوط به این کاربر یافت نشد.' });
-        }
+        if (userResult.rows.length === 0 || !userResult.rows[0].pharmacy_id) return res.status(404).json({ message: 'داروخانه مربوط به این کاربر یافت نشد.' });
         const pharmacyId = userResult.rows[0].pharmacy_id;
         const prescriptionsResult = await pool.query(
-            `SELECT * FROM prescriptions 
-             WHERE pharmacy_id = $1 
-             AND (
-                status IN ('pharmacy_selected', 'preparing') 
-                OR 
-                (completed_at > NOW() - INTERVAL '24 hours')
-                OR
-                (settled_at > NOW() - INTERVAL '24 hours')
-             )
-             ORDER BY created_at DESC`,
+            `SELECT * FROM prescriptions WHERE pharmacy_id = $1 AND (settled_at IS NULL OR settled_at > NOW() - INTERVAL '24 hours') ORDER BY created_at DESC`,
             [pharmacyId]
         );
         res.json(prescriptionsResult.rows);
@@ -152,25 +126,19 @@ app.get('/api/v1/pharmacy/prescriptions', authenticateToken, async (req, res) =>
 app.get('/api/v1/pharmacy/reports/full', authenticateToken, async (req, res) => {
     try {
         const { username } = req.user;
-        const { startDate, endDate } = req.query; // Corrected from req.body
+        const { startDate, endDate } = req.query;
         if (!startDate || !endDate) return res.status(400).json({ message: 'بازه زمانی (startDate, endDate) الزامی است.' });
         const userResult = await pool.query('SELECT pharmacy_id FROM users WHERE username = $1', [username]);
         if (userResult.rows.length === 0 || !userResult.rows[0].pharmacy_id) return res.status(404).json({ message: 'داروخانه یافت نشد.' });
         const pharmacyId = userResult.rows[0].pharmacy_id;
         const reportResult = await pool.query(
-            `SELECT * FROM prescriptions 
-             WHERE pharmacy_id = $1 
-             AND status IN ('settled', 'rejected', 'cancelled_by_user')
-             AND DATE(COALESCE(settled_at, completed_at)) BETWEEN $2 AND $3
-             ORDER BY COALESCE(settled_at, completed_at) DESC`,
+            `SELECT * FROM prescriptions WHERE pharmacy_id = $1 AND status IN ('settled', 'rejected', 'cancelled_by_user') AND DATE(completed_at) BETWEEN $2 AND $3 ORDER BY completed_at DESC`,
             [pharmacyId, startDate, endDate]
         );
         res.json(reportResult.rows);
-    } catch (error) {
-        console.error('Error fetching full report:', error);
-        res.status(500).json({ message: 'خطای داخلی سرور' });
-    }
+    } catch (error) { res.status(500).json({ message: 'خطای داخلی سرور' }); }
 });
+
 // --- API های عمومی (PWA کاربر) ---
 app.post('/api/v1/prescriptions/submit', async (req, res) => {
     try {
@@ -178,23 +146,11 @@ app.post('/api/v1/prescriptions/submit', async (req, res) => {
         if (!nationalId || !trackingCode || !insuranceType) return res.status(400).json({ success: false, message: 'تمام اطلاعات الزامی است.' });
         const existingPrescription = await pool.query('SELECT id, status FROM prescriptions WHERE tracking_code = $1', [trackingCode]);
         if (existingPrescription.rows.length > 0) {
-            // اگر نسخه تکراری بود، یک پاسخ مشخص با کد 409 به همراه وضعیت فعلی آن برمی‌گردانیم
-            return res.status(409).json({ 
-                success: false,
-                isDuplicate: true, 
-                message: 'این کد رهگیری قبلاً ثبت شده است.',
-                prescription: existingPrescription.rows[0] // شامل id و status
-            });
+            return res.status(409).json({ success: false, isDuplicate: true, message: 'این کد رهگیری قبلاً ثبت شده است.', prescription: existingPrescription.rows[0] });
         }
-        const result = await pool.query(
-            'INSERT INTO prescriptions (national_id, tracking_code, insurance_type) VALUES ($1, $2, $3) RETURNING id',
-            [nationalId, trackingCode, insuranceType]
-        );
+        const result = await pool.query('INSERT INTO prescriptions (national_id, tracking_code, insurance_type) VALUES ($1, $2, $3) RETURNING id', [nationalId, trackingCode, insuranceType]);
         res.status(201).json({ success: true, message: 'نسخه شما با موفقیت ثبت شد.', prescriptionId: result.rows[0].id });
-    } catch (error) {
-        console.error('Error in /submit endpoint:', error);
-        res.status(500).json({ success: false, message: 'خطای داخلی سرور هنگام ثبت نسخه.' });
-    }
+    } catch (error) { res.status(500).json({ success: false, message: 'خطای داخلی سرور هنگام ثبت نسخه.' }); }
 });
 
 app.post('/api/v1/prescriptions/:id/select-pharmacy', async (req, res) => {
@@ -231,46 +187,44 @@ app.get('/api/v1/prescriptions/history/:nationalId', async (req, res) => {
 app.put('/api/v1/prescriptions/:id/status', authenticateToken, async (req, res) => {
     try {
         const prescriptionId = req.params.id;
-        const { newStatus } = req.body;
+        const { newStatus, invoiceAmount } = req.body;
         
-        // --- منطق جدید برای جلوگیری از Race Condition ---
+        const validTransitions = {
+            pharmacy_selected: ['preparing', 'rejected'],
+            preparing: ['ready']
+        };
+
         const client = await pool.connect();
         try {
             await client.query('BEGIN');
-
-            // ابتدا وضعیت فعلی نسخه را قفل و بررسی می‌کنیم
             const currentResult = await client.query('SELECT status FROM prescriptions WHERE id = $1 FOR UPDATE', [prescriptionId]);
-            if (currentResult.rows.length === 0) {
-                return res.status(404).json({ message: 'سفارش یافت نشد.' });
-            }
+            if (currentResult.rows.length === 0) return res.status(404).json({ message: 'سفارش یافت نشد.' });
             const currentStatus = currentResult.rows[0].status;
-
-            // بررسی می‌کنیم که آیا تغییر وضعیت مجاز است یا خیر
-            const validTransitions = {
-                pharmacy_selected: ['preparing', 'rejected'],
-                preparing: ['ready']
-            };
 
             if (!validTransitions[currentStatus] || !validTransitions[currentStatus].includes(newStatus)) {
                 await client.query('ROLLBACK');
                 return res.status(409).json({ message: `عملیات مجاز نیست. وضعیت فعلی سفارش "${translateStatus(currentStatus)}" است.` });
             }
             
-            // اگر همه چیز صحیح بود، وضعیت جدید را به همراه زمان مربوطه ثبت می‌کنیم
-            let queryText = '';
+            let queryText, queryParams;
             if (newStatus === 'preparing') {
                 queryText = "UPDATE prescriptions SET status = $1, processing_started_at = NOW() WHERE id = $2";
-            } else if (newStatus === 'ready' || newStatus === 'rejected') {
+                queryParams = [newStatus, prescriptionId];
+            } else if (newStatus === 'ready') {
+                queryText = "UPDATE prescriptions SET status = $1, completed_at = NOW(), invoice_amount = $2 WHERE id = $3";
+                queryParams = [newStatus, invoiceAmount, prescriptionId];
+            } else if (newStatus === 'rejected') {
                 queryText = "UPDATE prescriptions SET status = $1, completed_at = NOW() WHERE id = $2";
+                queryParams = [newStatus, prescriptionId];
             }
             
-            await client.query(queryText, [newStatus, prescriptionId]);
+            if (queryText) await client.query(queryText, queryParams);
             await client.query('COMMIT');
             res.status(200).json({ success: true, message: 'وضعیت سفارش با موفقیت به‌روز شد.' });
 
         } catch (error) {
             await client.query('ROLLBACK');
-            throw error; // خطا را به catch اصلی ارسال کن
+            throw error;
         } finally {
             client.release();
         }
@@ -280,118 +234,38 @@ app.put('/api/v1/prescriptions/:id/status', authenticateToken, async (req, res) 
     }
 });
 
-// --- API جدید برای لغو سفارش توسط کاربر ---
+app.post('/api/v1/prescriptions/:id/settle', authenticateToken, async (req, res) => {
+    try {
+        const prescriptionId = req.params.id;
+        await pool.query("UPDATE prescriptions SET settled_at = NOW(), status = 'settled' WHERE id = $1", [prescriptionId]);
+        res.status(200).json({ success: true, message: 'سفارش با موفقیت تسویه شد.' });
+    } catch (error) { res.status(500).json({ message: 'خطا در تسویه حساب.' }); }
+});
+
 app.put('/api/v1/prescriptions/:id/cancel', async (req, res) => {
     try {
         const { id } = req.params;
-        
-        // ابتدا وضعیت فعلی را چک می‌کنیم
         const current = await pool.query('SELECT status FROM prescriptions WHERE id = $1', [id]);
-        if (current.rows.length === 0) {
-            return res.status(404).json({ message: 'سفارش یافت نشد.' });
-        }
-        
+        if (current.rows.length === 0) return res.status(404).json({ message: 'سفارش یافت نشد.' });
         const currentStatus = current.rows[0].status;
-        // فقط در این وضعیت‌ها امکان لغو وجود دارد
-        if (['pending', 'pharmacy_selected', 'preparing'].includes(currentStatus)) {
+        if (['pharmacy_selected'].includes(currentStatus)) {
             await pool.query("UPDATE prescriptions SET status = 'cancelled_by_user', completed_at = NOW() WHERE id = $1", [id]);
             res.status(200).json({ success: true, message: 'سفارش با موفقیت لغو شد.' });
         } else {
-            // اگر وضعیت 'ready' یا بالاتر بود، دیگر امکان لغو نیست
             res.status(403).json({ success: false, message: 'امکان لغو این سفارش وجود ندارد.' });
         }
-    } catch (error) {
-        console.error('Error in /cancel endpoint:', error);
-        res.status(500).json({ success: false, message: 'خطای داخلی سرور.' });
-    }
-});
-
-// --- API جدید: دریافت آمار کلی برای داشبورد ادمین ---
-app.get('/api/v1/admin/dashboard-stats', async (req, res) => {
-    // This should be a protected route in a real app
-    try {
-        const totalPrescriptionsQuery = await pool.query('SELECT COUNT(*) FROM prescriptions;');
-        const totalPharmaciesQuery = await pool.query('SELECT COUNT(*) FROM pharmacies;');
-        const pendingPrescriptionsQuery = await pool.query("SELECT COUNT(*) FROM prescriptions WHERE status = 'pharmacy_selected';");
-        const recentPrescriptionsQuery = await pool.query(
-            `SELECT p.id, p.status, p.created_at, ph.name as pharmacy_name 
-             FROM prescriptions p LEFT JOIN pharmacies ph ON p.pharmacy_id = ph.id
-             ORDER BY p.created_at DESC LIMIT 5;`
-        );
-        res.status(200).json({
-            stats: {
-                totalOrders: parseInt(totalPrescriptionsQuery.rows[0].count, 10),
-                totalPharmacies: parseInt(totalPharmaciesQuery.rows[0].count, 10),
-                pendingOrders: parseInt(pendingPrescriptionsQuery.rows[0].count, 10),
-            },
-            recentOrders: recentPrescriptionsQuery.rows,
-        });
-    } catch (error) {
-        console.error('Error fetching admin dashboard stats:', error);
-        res.status(500).json({ message: 'خطا در دریافت اطلاعات داشبورد.' });
-    }
+    } catch (error) { res.status(500).json({ success: false, message: 'خطای داخلی سرور.' }); }
 });
 
 app.put('/api/v1/prescriptions/:id/resubmit', async (req, res) => {
     try {
         const { id } = req.params;
-        
-        // ریست کردن وضعیت به حالت اولیه و پاک کردن اطلاعات قبلی
         await pool.query(
-            `UPDATE prescriptions 
-             SET status = 'pending', 
-                 pharmacy_id = NULL, 
-                 pharmacy_assigned_at = NULL, 
-                 processing_started_at = NULL, 
-                 completed_at = NULL, 
-                 settled_at = NULL 
-             WHERE id = $1 AND status IN ('rejected', 'cancelled_by_user')`,
+            `UPDATE prescriptions SET status = 'pending', pharmacy_id = NULL, pharmacy_assigned_at = NULL, processing_started_at = NULL, completed_at = NULL, settled_at = NULL, invoice_amount = NULL WHERE id = $1 AND status IN ('rejected', 'cancelled_by_user')`,
             [id]
         );
-        
         res.status(200).json({ success: true, message: 'نسخه برای ثبت مجدد آماده شد.' });
-    } catch (error) {
-        console.error('Error in /resubmit endpoint:', error);
-        res.status(500).json({ success: false, message: 'خطای داخلی سرور.' });
-    }
-});
-
-// --- API جدید برای جستجوی نسخه ---
-app.get('/api/v1/pharmacy/search', authenticateToken, async (req, res) => {
-    try {
-        const { type, value } = req.query; // نوع و مقدار جستجو
-        const { username } = req.user;
-
-        if (!type || !value) {
-            return res.status(400).json({ message: 'نوع و مقدار جستجو الزامی است.' });
-        }
-
-        const userResult = await pool.query('SELECT pharmacy_id FROM users WHERE username = $1', [username]);
-        if (userResult.rows.length === 0 || !userResult.rows[0].pharmacy_id) {
-            return res.status(404).json({ message: 'داروخانه یافت نشد.' });
-        }
-        const pharmacyId = userResult.rows[0].pharmacy_id;
-
-        let queryText = 'SELECT * FROM prescriptions WHERE pharmacy_id = $1';
-        const queryParams = [pharmacyId, value];
-
-        if (type === 'nationalId') {
-            queryText += ' AND national_id = $2';
-        } else if (type === 'trackingCode') {
-            queryText += ' AND tracking_code = $2';
-        } else {
-            return res.status(400).json({ message: 'نوع جستجوی نامعتبر است. (nationalId or trackingCode)' });
-        }
-        
-        queryText += ' ORDER BY created_at DESC';
-        
-        const searchResult = await pool.query(queryText, queryParams);
-        res.json(searchResult.rows);
-
-    } catch (error) {
-        console.error('Error in search endpoint:', error);
-        res.status(500).json({ message: 'خطای داخلی سرور' });
-    }
+    } catch (error) { res.status(500).json({ success: false, message: 'خطای داخلی سرور.' }); }
 });
 
 

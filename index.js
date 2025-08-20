@@ -8,6 +8,15 @@ const app = express();
 const port = 3000;
 const JWT_SECRET = 'your_super_secret_key_that_should_be_in_env_file';
 
+// --- Middlewares ---
+app.use(cors());
+app.use(express.json());
+
+// --- Database Pool ---
+const pool = new Pool({
+  user: 'myuser', host: '127.0.0.1', database: 'noskheresan_db', password: 'mypassword', port: 5432,
+});
+
 const translateStatus = (status) => {
   const statusMap = {
     pending: 'در انتظار انتخاب داروخانه',
@@ -20,15 +29,6 @@ const translateStatus = (status) => {
   };
   return statusMap[status] || status; // اگر ترجمه پیدا نشد، خود کلمه را برگردان
 };
-
-// --- Middlewares ---
-app.use(cors());
-app.use(express.json());
-
-// --- Database Pool ---
-const pool = new Pool({
-  user: 'myuser', host: '127.0.0.1', database: 'noskheresan_db', password: 'mypassword', port: 5432,
-});
 
 // --- Middleware برای احراز هویت ---
 const authenticateToken = (req, res, next) => {

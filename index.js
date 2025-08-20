@@ -4,10 +4,22 @@ const { Pool } = require('pg');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-
 const app = express();
 const port = 3000;
 const JWT_SECRET = 'your_super_secret_key_that_should_be_in_env_file';
+
+const translateStatus = (status) => {
+  const statusMap = {
+    pending: 'در انتظار انتخاب داروخانه',
+    pharmacy_selected: 'در انتظار تایید داروخانه',
+    preparing: 'در حال آماده‌سازی',
+    ready: 'آماده تحویل',
+    rejected: 'رد شده',
+    settled: 'تسویه و تحویل شد',
+    cancelled_by_user: 'لغو توسط کاربر',
+  };
+  return statusMap[status] || status; // اگر ترجمه پیدا نشد، خود کلمه را برگردان
+};
 
 // --- Middlewares ---
 app.use(cors());

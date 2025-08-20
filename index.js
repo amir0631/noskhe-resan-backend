@@ -220,27 +220,52 @@ app.put('/api/v1/prescriptions/:id/status', authenticateToken, async (req, res) 
     try {
         const prescriptionId = req.params.id;
         const { newStatus } = req.body;
-        const allowedStatuses = ['preparing', 'ready', 'rejected'];
-        if (!newStatus || !allowedStatuses.includes(newStatus)) return res.status(400).json({ success: false, message: 'وضعیت جدید نامعتبر است.' });
-        let queryText;
-        if (newStatus === 'preparing') {
-            queryText = "UPDATE prescriptions SET status = $1, processing_started_at = NOW() WHERE id = $2";
-        } else if (newStatus === 'ready' || newStatus === 'rejected') {
-            queryText = "UPDATE prescriptions SET status = $1, completed_at = NOW() WHERE id = $2";
-        } else {
-            queryText = "UPDATE prescriptions SET status = $1 WHERE id = $2";
-        }
-        await pool.query(queryText, [newStatus, prescriptionId]);
-        res.status(200).json({ success: true, message: 'وضعیت سفارش با موفقیت به‌روز شد.' });
-    } catch (error) { res.status(500).json({ success: false, message: 'خطا در به‌روزرسانی وضعیت سفارش.' }); }
-});
+        
+        // --- منطق جدید برای جلوگیری از Race Condition ---
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
 
-app.post('/api/v1/prescriptions/:id/settle', authenticateToken, async (req, res) => {
-    try {
-        const prescriptionId = req.params.id;
-        await pool.query("UPDATE prescriptions SET settled_at = NOW(), status = 'settled' WHERE id = $1", [prescriptionId]);
-        res.status(200).json({ success: true, message: 'سفارش با موفقیت تسویه شد.' });
-    } catch (error) { res.status(500).json({ message: 'خطا در تسویه حساب.' }); }
+            // ابتدا وضعیت فعلی نسخه را قفل و بررسی می‌کنیم
+            const currentResult = await client.query('SELECT status FROM prescriptions WHERE id = $1 FOR UPDATE', [prescriptionId]);
+            if (currentResult.rows.length === 0) {
+                return res.status(404).json({ message: 'سفارش یافت نشد.' });
+            }
+            const currentStatus = currentResult.rows[0].status;
+
+            // بررسی می‌کنیم که آیا تغییر وضعیت مجاز است یا خیر
+            const validTransitions = {
+                pharmacy_selected: ['preparing', 'rejected'],
+                preparing: ['ready']
+            };
+
+            if (!validTransitions[currentStatus] || !validTransitions[currentStatus].includes(newStatus)) {
+                await client.query('ROLLBACK');
+                return res.status(409).json({ message: `عملیات مجاز نیست. وضعیت فعلی سفارش "${translateStatus(currentStatus)}" است.` });
+            }
+            
+            // اگر همه چیز صحیح بود، وضعیت جدید را به همراه زمان مربوطه ثبت می‌کنیم
+            let queryText = '';
+            if (newStatus === 'preparing') {
+                queryText = "UPDATE prescriptions SET status = $1, processing_started_at = NOW() WHERE id = $2";
+            } else if (newStatus === 'ready' || newStatus === 'rejected') {
+                queryText = "UPDATE prescriptions SET status = $1, completed_at = NOW() WHERE id = $2";
+            }
+            
+            await client.query(queryText, [newStatus, prescriptionId]);
+            await client.query('COMMIT');
+            res.status(200).json({ success: true, message: 'وضعیت سفارش با موفقیت به‌روز شد.' });
+
+        } catch (error) {
+            await client.query('ROLLBACK');
+            throw error; // خطا را به catch اصلی ارسال کن
+        } finally {
+            client.release();
+        }
+    } catch (error) {
+        console.error('Error in status update endpoint:', error);
+        res.status(500).json({ success: false, message: 'خطا در به‌روزرسانی وضعیت سفارش.' });
+    }
 });
 
 // --- API جدید برای لغو سفارش توسط کاربر ---

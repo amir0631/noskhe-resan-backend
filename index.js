@@ -282,6 +282,34 @@ app.put('/api/v1/prescriptions/:id/resubmit', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, message: 'خطای داخلی سرور.' }); }
 });
 
+// --- API جدید برای شروع فرآیند پرداخت ---
+app.post('/api/v1/prescriptions/:id/initiate-payment', async (req, res) => {
+    try {
+        const { id } = req.params;
+        // در دنیای واقعی، اینجا با درگاه پرداخت صحبت می‌کنیم و یک لینک پرداخت واقعی می‌گیریم
+        // ما اینجا فقط یک لینک ساختگی برمی‌گردانیم
+        const fakePaymentUrl = `/payment-simulation.html?prescriptionId=${id}`;
+        res.json({ success: true, paymentUrl: fakePaymentUrl });
+    } catch (error) {
+        res.status(500).json({ message: 'خطا در شروع فرآیند پرداخت.' });
+    }
+});
+
+// --- API جدید برای callback پرداخت (شبیه‌سازی شده) ---
+app.post('/api/v1/payment/callback', async (req, res) => {
+    try {
+        const { prescriptionId, refId } = req.body;
+        // در دنیای واقعی، اینجا صحت تراکنش را با درگاه چک می‌کنیم
+        await pool.query(
+            "UPDATE prescriptions SET payment_status = 'paid', payment_ref_id = $1 WHERE id = $2",
+            [refId, prescriptionId]
+        );
+        res.json({ success: true, message: 'پرداخت با موفقیت ثبت شد.' });
+    } catch (error) {
+        res.status(500).json({ message: 'خطا در ثبت پرداخت.' });
+    }
+});
+
 
 app.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);
